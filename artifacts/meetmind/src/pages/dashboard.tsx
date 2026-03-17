@@ -3,7 +3,7 @@ import { useGetMeetings } from '@workspace/api-client-react';
 import { Meeting } from '@workspace/api-client-react/src/generated/api.schemas';
 import { compareAsc, parseISO } from 'date-fns';
 import { isTodayEST, isFutureEST } from '@/lib/timezone';
-import { Plus, Camera, Loader2, CalendarX, BellRing, BellOff, Bell } from 'lucide-react';
+import { Plus, Loader2, CalendarX, BellRing, BellOff, Bell } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Layout } from '@/components/layout';
@@ -13,6 +13,7 @@ import { MeetingForm } from '@/components/meeting-form';
 import { AiUploadModal } from '@/components/ai-upload-modal';
 import { MeetingDetailModal } from '@/components/meeting-detail-modal';
 import { DayModal } from '@/components/day-modal';
+import { AddMeetingChoiceModal } from '@/components/add-meeting-choice-modal';
 import { useReminders } from '@/hooks/use-reminders';
 import { usePushNotifications } from '@/hooks/use-push-notifications';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -37,13 +38,27 @@ export default function Dashboard() {
   const [dayOpen, setDayOpen] = useState(false);
   const [selectedDay, setSelectedDay] = useState<Date | null>(null);
 
+  // ── Add-meeting choice ──────────────────────────────────────────────────────
+  const [choiceOpen, setChoiceOpen] = useState(false);
+  const [pendingDate, setPendingDate] = useState<Date | undefined>(undefined);
+
   // ── AI upload ───────────────────────────────────────────────────────────────
   const [aiModalOpen, setAiModalOpen] = useState(false);
 
   // ── Handlers ────────────────────────────────────────────────────────────────
 
+  // Opens choice modal; optionally pre-seeds a date for the manual path
   const openNewMeeting = (date?: Date) => {
-    setSelectedMeeting(date ? { startTime: date.toISOString() } : undefined);
+    setPendingDate(date);
+    setChoiceOpen(true);
+  };
+
+  const handleChooseScan = () => {
+    setAiModalOpen(true);
+  };
+
+  const handleChooseManual = () => {
+    setSelectedMeeting(pendingDate ? { startTime: pendingDate.toISOString() } : undefined);
     setIsAiExtracted(false);
     setFormOpen(true);
   };
@@ -165,19 +180,11 @@ export default function Dashboard() {
           <div className="flex gap-3 w-full sm:w-auto flex-wrap">
             {pushButton()}
             <Button
-              variant="outline"
-              className="flex-1 sm:flex-none rounded-xl h-12 px-4 border-primary/20 hover:bg-primary/5 text-primary hover:text-primary transition-all font-semibold"
-              onClick={() => setAiModalOpen(true)}
-            >
-              <Camera className="w-5 h-5 mr-2" />
-              Scan Image
-            </Button>
-            <Button
               className="flex-1 sm:flex-none rounded-xl h-12 px-6 shadow-lg shadow-primary/25 hover:shadow-xl hover:shadow-primary/30 transition-all hover:-translate-y-0.5 font-semibold bg-gradient-to-r from-primary to-primary/80"
               onClick={() => openNewMeeting()}
             >
               <Plus className="w-5 h-5 mr-2" />
-              New Meeting
+              Add Meeting
             </Button>
           </div>
         </div>
@@ -256,6 +263,14 @@ export default function Dashboard() {
       </div>
 
       {/* ── Modals ─────────────────────────────────────────────────────────────── */}
+
+      {/* Add meeting choice (scan vs manual) */}
+      <AddMeetingChoiceModal
+        isOpen={choiceOpen}
+        onClose={() => setChoiceOpen(false)}
+        onScan={handleChooseScan}
+        onManual={handleChooseManual}
+      />
 
       {/* AI image upload */}
       <AiUploadModal
