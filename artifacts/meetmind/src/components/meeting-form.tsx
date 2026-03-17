@@ -6,6 +6,7 @@ import { useCreateMeeting, useUpdateMeeting, useDeleteMeeting } from '@workspace
 import { Meeting } from '@workspace/api-client-react/src/generated/api.schemas';
 import { useQueryClient } from '@tanstack/react-query';
 import { format } from 'date-fns';
+import { cn } from '@/lib/utils';
 import { 
   Calendar, Clock, Link2, MapPin, AlignLeft, User, Bell, Palette, Loader2, Trash2
 } from 'lucide-react';
