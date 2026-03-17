@@ -1,0 +1,21 @@
+packages:
+  "date-fns": "For complex date math, calendar grid generation, and formatting"
+  "framer-motion": "For smooth layout transitions, modal pops, and hover effects"
+  "react-hook-form": "For robust meeting form state management"
+  "@hookform/resolvers": "For Zod schema validation integration"
+  "lucide-react": "Beautiful consistent icons"
+  "canvas-confetti": "For delightful micro-interactions when a meeting is saved"
+
+images:
+  - path: "artifacts/meetmind/public/images/empty-calendar.png"
+    description: "A beautiful 3D abstract illustration of a calendar floating with soft purple and indigo gradients, minimal, premium, transparent background"
+    aspect_ratio: "1:1"
+  - path: "artifacts/meetmind/public/images/hero-bg.png"
+    description: "Abstract gradient mesh background in deep indigo, violet, and soft teal with light leaks, modern, premium, dark mode friendly"
+    aspect_ratio: "16:9"
+
+notes:
+  - Using wouter for routing.
+  - Using @workspace/api-client-react for TanStack Query hooks.
+  - Assuming standard shadcn components exist in src/components/ui/.
+  - Need to handle Base64 conversion for the AI endpoint manually on the frontend.

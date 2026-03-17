@@ -1,15 +1,18 @@
 openapi: 3.1.0
 info:
-  # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: MeetMind Meeting Calendar API
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: meetings
+    description: Meeting management
+  - name: ai
+    description: AI-powered meeting extraction
 paths:
   /healthz:
     get:
@@ -24,6 +27,119 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /meetings:
+    get:
+      operationId: getMeetings
+      tags: [meetings]
+      summary: Get all meetings
+      responses:
+        "200":
+          description: List of meetings
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Meeting"
+    post:
+      operationId: createMeeting
+      tags: [meetings]
+      summary: Create a new meeting
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateMeetingBody"
+      responses:
+        "201":
+          description: Meeting created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Meeting"
+
+  /meetings/{id}:
+    get:
+      operationId: getMeeting
+      tags: [meetings]
+      summary: Get a meeting by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Meeting found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Meeting"
+        "404":
+          description: Not found
+    put:
+      operationId: updateMeeting
+      tags: [meetings]
+      summary: Update a meeting
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateMeetingBody"
+      responses:
+        "200":
+          description: Meeting updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Meeting"
+    delete:
+      operationId: deleteMeeting
+      tags: [meetings]
+      summary: Delete a meeting
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Meeting deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteResult"
+
+  /ai/extract-meeting:
+    post:
+      operationId: extractMeetingFromImage
+      tags: [ai]
+      summary: Extract meeting details from an image using AI
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExtractMeetingBody"
+      responses:
+        "200":
+          description: Extracted meeting data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExtractedMeeting"
+
 components:
   schemas:
     HealthStatus:
@@ -34,3 +150,186 @@ components:
       required:
         - status
 
+    Meeting:
+      type: object
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        description:
+          type: string
+          nullable: true
+        startTime:
+          type: string
+          format: date-time
+        endTime:
+          type: string
+          format: date-time
+          nullable: true
+        timezone:
+          type: string
+          nullable: true
+        location:
+          type: string
+          nullable: true
+        organizer:
+          type: string
+          nullable: true
+        meetingUrl:
+          type: string
+          nullable: true
+        notes:
+          type: string
+          nullable: true
+        reminderMinutes:
+          type: integer
+          nullable: true
+        color:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - title
+        - startTime
+        - createdAt
+        - updatedAt
+
+    CreateMeetingBody:
+      type: object
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+          nullable: true
+        startTime:
+          type: string
+          format: date-time
+        endTime:
+          type: string
+          format: date-time
+          nullable: true
+        timezone:
+          type: string
+          nullable: true
+        location:
+          type: string
+          nullable: true
+        organizer:
+          type: string
+          nullable: true
+        meetingUrl:
+          type: string
+          nullable: true
+        notes:
+          type: string
+          nullable: true
+        reminderMinutes:
+          type: integer
+          nullable: true
+        color:
+          type: string
+          nullable: true
+      required:
+        - title
+        - startTime
+
+    UpdateMeetingBody:
+      type: object
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+          nullable: true
+        startTime:
+          type: string
+          format: date-time
+        endTime:
+          type: string
+          format: date-time
+          nullable: true
+        timezone:
+          type: string
+          nullable: true
+        location:
+          type: string
+          nullable: true
+        organizer:
+          type: string
+          nullable: true
+        meetingUrl:
+          type: string
+          nullable: true
+        notes:
+          type: string
+          nullable: true
+        reminderMinutes:
+          type: integer
+          nullable: true
+        color:
+          type: string
+          nullable: true
+
+    DeleteResult:
+      type: object
+      properties:
+        success:
+          type: boolean
+      required:
+        - success
+
+    ExtractMeetingBody:
+      type: object
+      properties:
+        imageBase64:
+          type: string
+          description: Base64 encoded image data
+        mimeType:
+          type: string
+          description: MIME type of the image (e.g. image/jpeg, image/png)
+      required:
+        - imageBase64
+        - mimeType
+
+    ExtractedMeeting:
+      type: object
+      properties:
+        title:
+          type: string
+          nullable: true
+        description:
+          type: string
+          nullable: true
+        startTime:
+          type: string
+          nullable: true
+        endTime:
+          type: string
+          nullable: true
+        timezone:
+          type: string
+          nullable: true
+        location:
+          type: string
+          nullable: true
+        organizer:
+          type: string
+          nullable: true
+        meetingUrl:
+          type: string
+          nullable: true
+        notes:
+          type: string
+          nullable: true
+        confidence:
+          type: number
+          nullable: true
+      required: []
