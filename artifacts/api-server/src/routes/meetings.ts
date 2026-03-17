@@ -67,6 +67,8 @@ router.post("/meetings", async (req, res) => {
         meetingUrl: str(b.meetingUrl),
         notes: str(b.notes),
         reminderMinutes: num(b.reminderMinutes) ?? 15,
+        reminderMinutes2: num(b.reminderMinutes2),
+        reminderMinutes3: num(b.reminderMinutes3),
         color: str(b.color) ?? "#6366f1",
       })
       .returning();
@@ -114,6 +116,8 @@ router.put("/meetings/:id", async (req, res) => {
     if (b.meetingUrl !== undefined) updateData.meetingUrl = str(b.meetingUrl);
     if (b.notes !== undefined) updateData.notes = str(b.notes);
     if (b.reminderMinutes !== undefined) updateData.reminderMinutes = num(b.reminderMinutes);
+    if (b.reminderMinutes2 !== undefined) updateData.reminderMinutes2 = num(b.reminderMinutes2);
+    if (b.reminderMinutes3 !== undefined) updateData.reminderMinutes3 = num(b.reminderMinutes3);
     if (b.color !== undefined) updateData.color = str(b.color);
 
     const [meeting] = await db

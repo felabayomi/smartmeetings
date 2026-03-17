@@ -8,11 +8,7 @@ const router: IRouter = Router();
 const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || "BM4A8xrDgKpyDmGEpDZlROCwsijp8uvy4a-EnW2zNDdCqE3FF0Idg67CwNJq2lPLsu0xl6jNBrPCYLDaylc5Ypo";
 const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || "YzukqYDQpFl0ll7euuU3HnW0Of_0a-JRl43r_ZRqQCo";
 
-webPush.setVapidDetails(
-  "mailto:meetmind@app.com",
-  VAPID_PUBLIC_KEY,
-  VAPID_PRIVATE_KEY
-);
+webPush.setVapidDetails("mailto:meetmind@app.com", VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
 
 function safeLog(label: string, err: unknown) {
   try {
@@ -20,6 +16,18 @@ function safeLog(label: string, err: unknown) {
   } catch {
     console.error(label, "(error)");
   }
+}
+
+function timeLabel(minutesUntil: number): string {
+  if (minutesUntil >= 1440) {
+    const days = Math.round(minutesUntil / 1440);
+    return `${days} day${days !== 1 ? "s" : ""}`;
+  }
+  if (minutesUntil >= 60) {
+    const hrs = Math.round(minutesUntil / 60);
+    return `${hrs} hour${hrs !== 1 ? "s" : ""}`;
+  }
+  return `${minutesUntil} minute${minutesUntil !== 1 ? "s" : ""}`;
 }
 
 // Return public key so the frontend can subscribe
@@ -37,7 +45,6 @@ router.post("/push/subscribe", async (req, res) => {
     if (!endpoint || !keys?.p256dh || !keys?.auth) {
       return res.status(400).json({ error: "Invalid subscription" });
     }
-
     await db
       .insert(pushSubscriptionsTable)
       .values({ endpoint, p256dh: keys.p256dh, auth: keys.auth })
@@ -45,7 +52,6 @@ router.post("/push/subscribe", async (req, res) => {
         target: pushSubscriptionsTable.endpoint,
         set: { p256dh: keys.p256dh, auth: keys.auth },
       });
-
     res.json({ success: true });
   } catch (err) {
     safeLog("POST /push/subscribe error:", err);
@@ -70,13 +76,13 @@ router.post("/push/unsubscribe", async (req, res) => {
 });
 
 // ── Background scheduler ──────────────────────────────────────────────────────
-// Runs every 60 seconds. Sends a push notification for any meeting whose
-// reminderMinutes window starts within this tick interval.
+// Runs every 60 seconds. For each meeting, checks all configured reminder slots
+// and sends a push notification for any whose fire-time falls in this tick.
 
 async function sendReminderNotifications() {
   try {
     const now = new Date();
-    const checkAheadMs = 65 * 1000; // slightly over 60s to avoid gaps
+    const checkAheadMs = 65 * 1000; // slightly over 60 s to avoid gaps
 
     const meetings = await db.select().from(meetingsTable);
     const subs = await db.select().from(pushSubscriptionsTable);
@@ -84,47 +90,46 @@ async function sendReminderNotifications() {
 
     for (const meeting of meetings) {
       const start = new Date(meeting.startTime);
-      const reminderMs = (meeting.reminderMinutes ?? 15) * 60 * 1000;
-      const fireAt = new Date(start.getTime() - reminderMs);
 
-      // Fire if the reminder window falls within the next tick
-      if (fireAt >= now && fireAt < new Date(now.getTime() + checkAheadMs)) {
-        const minutesUntil = Math.round((start.getTime() - now.getTime()) / 60000);
-        let timeLabel: string;
-        if (minutesUntil >= 1440) {
-          const days = Math.round(minutesUntil / 1440);
-          timeLabel = `${days} day${days !== 1 ? "s" : ""}`;
-        } else if (minutesUntil >= 60) {
-          const hrs = Math.round(minutesUntil / 60);
-          timeLabel = `${hrs} hour${hrs !== 1 ? "s" : ""}`;
-        } else {
-          timeLabel = `${minutesUntil} minute${minutesUntil !== 1 ? "s" : ""}`;
-        }
+      // Gather all non-null reminder values for this meeting
+      const reminderSlots: number[] = [
+        meeting.reminderMinutes,
+        meeting.reminderMinutes2,
+        meeting.reminderMinutes3,
+      ].filter((v): v is number => v !== null && v !== undefined);
 
-        const payload = JSON.stringify({
-          title: `⏰ Meeting in ${timeLabel}`,
-          body: `${meeting.title}${meeting.organizer ? ` · ${meeting.organizer}` : ""}`,
-          tag: `meeting-${meeting.id}`,
-          data: { meetingId: meeting.id, url: "/" },
-        });
+      for (const mins of reminderSlots) {
+        const fireAt = new Date(start.getTime() - mins * 60 * 1000);
 
-        for (const sub of subs) {
-          try {
-            await webPush.sendNotification(
-              { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
-              payload
-            );
-          } catch (e: unknown) {
-            // 410 = subscription expired/gone — clean it up
-            if (e && typeof e === "object" && "statusCode" in e && (e as { statusCode: number }).statusCode === 410) {
-              await db
-                .delete(pushSubscriptionsTable)
-                .where(eq(pushSubscriptionsTable.endpoint, sub.endpoint));
+        if (fireAt >= now && fireAt < new Date(now.getTime() + checkAheadMs)) {
+          const minutesUntil = Math.round((start.getTime() - now.getTime()) / 60000);
+          const label = timeLabel(minutesUntil);
+
+          const payload = JSON.stringify({
+            title: `⏰ Meeting in ${label}`,
+            body: `${meeting.title}${meeting.organizer ? ` · ${meeting.organizer}` : ""}`,
+            // unique tag per meeting+reminder so multiple reminders don't replace each other
+            tag: `meeting-${meeting.id}-r${mins}`,
+            data: { meetingId: meeting.id, url: "/" },
+          });
+
+          for (const sub of subs) {
+            try {
+              await webPush.sendNotification(
+                { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
+                payload
+              );
+            } catch (e: unknown) {
+              if (e && typeof e === "object" && "statusCode" in e && (e as { statusCode: number }).statusCode === 410) {
+                await db
+                  .delete(pushSubscriptionsTable)
+                  .where(eq(pushSubscriptionsTable.endpoint, sub.endpoint));
+              }
             }
           }
-        }
 
-        console.log(`Push sent: "${meeting.title}" (in ${timeLabel})`);
+          console.log(`Push sent: "${meeting.title}" — reminder at ${mins} min (in ${label})`);
+        }
       }
     }
   } catch (err) {
@@ -132,7 +137,6 @@ async function sendReminderNotifications() {
   }
 }
 
-// Start scheduler
 setInterval(sendReminderNotifications, 60 * 1000);
 console.log("Push notification scheduler started");
 

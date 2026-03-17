@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
@@ -8,7 +8,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { format } from 'date-fns';
 import { cn } from '@/lib/utils';
 import { 
-  Calendar, Clock, Link2, MapPin, AlignLeft, User, Bell, Palette, Loader2, Trash2
+  Calendar, Clock, Link2, MapPin, AlignLeft, User, Bell, Palette, Loader2, Trash2, Plus, X
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -31,6 +31,8 @@ const formSchema = z.object({
   meetingUrl: z.string().url("Must be a valid URL").optional().nullable().or(z.literal('')),
   organizer: z.string().optional().nullable(),
   reminderMinutes: z.coerce.number().optional().nullable(),
+  reminderMinutes2: z.coerce.number().optional().nullable(),
+  reminderMinutes3: z.coerce.number().optional().nullable(),
   color: z.string().optional().nullable(),
 });
 
@@ -107,6 +109,15 @@ export function MeetingForm({ initialData, onSuccess, onCancel, isAiExtracted }:
     }
   };
 
+  // Track how many reminder slots are visible (1–3)
+  const countInitialSlots = () => {
+    let c = 1;
+    if ((initialData as any)?.reminderMinutes2 != null) c = 2;
+    if ((initialData as any)?.reminderMinutes3 != null) c = 3;
+    return c;
+  };
+  const [reminderCount, setReminderCount] = useState(countInitialSlots);
+
   const form = useForm<FormValues>({
     resolver: zodResolver(formSchema),
     defaultValues: {
@@ -117,22 +128,23 @@ export function MeetingForm({ initialData, onSuccess, onCancel, isAiExtracted }:
       location: initialData?.location || '',
       meetingUrl: initialData?.meetingUrl || '',
       organizer: initialData?.organizer || '',
-      reminderMinutes: initialData?.reminderMinutes || 15,
+      reminderMinutes: initialData?.reminderMinutes ?? 15,
+      reminderMinutes2: (initialData as any)?.reminderMinutes2 ?? null,
+      reminderMinutes3: (initialData as any)?.reminderMinutes3 ?? null,
       color: initialData?.color || '#6366f1',
     },
   });
 
   const onSubmit = (values: FormValues) => {
-    // Convert local datetime input back to ISO string UTC
-    const toIso = (val?: string | null) => {
-      if (!val) return null;
-      return new Date(val).toISOString();
-    };
+    const toIso = (val?: string | null) => val ? new Date(val).toISOString() : null;
 
     const payload = {
       ...values,
       startTime: toIso(values.startTime)!,
       endTime: toIso(values.endTime),
+      // Only send slots that are visible; clear hidden ones
+      reminderMinutes2: reminderCount >= 2 ? values.reminderMinutes2 : null,
+      reminderMinutes3: reminderCount >= 3 ? values.reminderMinutes3 : null,
     };
 
     if (isEditing && initialData.id) {
@@ -282,38 +294,63 @@ export function MeetingForm({ initialData, onSuccess, onCancel, isAiExtracted }:
             />
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pb-6">
-              <FormField
-                control={form.control}
-                name="reminderMinutes"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel className="text-muted-foreground flex items-center"><Bell className="w-4 h-4 mr-2" /> Reminder</FormLabel>
-                    <Select onValueChange={(val) => field.onChange(parseInt(val))} defaultValue={field.value?.toString()}>
-                      <FormControl>
-                        <SelectTrigger className="h-11 rounded-xl bg-background">
-                          <SelectValue placeholder="Select reminder time" />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        <SelectItem value="0">At time of event</SelectItem>
-                        <SelectItem value="5">5 minutes before</SelectItem>
-                        <SelectItem value="10">10 minutes before</SelectItem>
-                        <SelectItem value="15">15 minutes before</SelectItem>
-                        <SelectItem value="30">30 minutes before</SelectItem>
-                        <SelectItem value="60">1 hour before</SelectItem>
-                        <SelectItem value="120">2 hours before</SelectItem>
-                        <SelectItem value="360">6 hours before</SelectItem>
-                        <SelectItem value="720">12 hours before</SelectItem>
-                        <SelectItem value="1440">1 day before</SelectItem>
-                        <SelectItem value="2880">2 days before</SelectItem>
-                        <SelectItem value="4320">3 days before</SelectItem>
-                        <SelectItem value="10080">1 week before</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <FormMessage />
-                  </FormItem>
+              {/* Multi-reminder section */}
+              <div className="md:col-span-2 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium text-muted-foreground flex items-center">
+                    <Bell className="w-4 h-4 mr-2" /> Reminders
+                    <span className="ml-2 text-xs text-muted-foreground/60">({reminderCount}/3)</span>
+                  </span>
+                  {reminderCount < 3 && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2 text-xs text-primary hover:text-primary hover:bg-primary/10 rounded-lg"
+                      onClick={() => setReminderCount(c => Math.min(3, c + 1))}
+                    >
+                      <Plus className="w-3 h-3 mr-1" /> Add reminder
+                    </Button>
+                  )}
+                </div>
+
+                {/* Slot 1 — always visible */}
+                <ReminderSlot
+                  label="1st reminder"
+                  value={form.watch('reminderMinutes')}
+                  onChange={(v) => form.setValue('reminderMinutes', v)}
+                  canRemove={false}
+                />
+
+                {/* Slot 2 */}
+                {reminderCount >= 2 && (
+                  <ReminderSlot
+                    label="2nd reminder"
+                    value={form.watch('reminderMinutes2')}
+                    onChange={(v) => form.setValue('reminderMinutes2', v)}
+                    canRemove
+                    onRemove={() => {
+                      form.setValue('reminderMinutes2', null);
+                      form.setValue('reminderMinutes3', null);
+                      setReminderCount(c => c - 1);
+                    }}
+                  />
                 )}
-              />
+
+                {/* Slot 3 */}
+                {reminderCount >= 3 && (
+                  <ReminderSlot
+                    label="3rd reminder"
+                    value={form.watch('reminderMinutes3')}
+                    onChange={(v) => form.setValue('reminderMinutes3', v)}
+                    canRemove
+                    onRemove={() => {
+                      form.setValue('reminderMinutes3', null);
+                      setReminderCount(c => c - 1);
+                    }}
+                  />
+                )}
+              </div>
 
               <FormField
                 control={form.control}
@@ -360,6 +397,60 @@ export function MeetingForm({ initialData, onSuccess, onCancel, isAiExtracted }:
           {isPending ? <Loader2 className="w-5 h-5 animate-spin" /> : "Save Meeting"}
         </Button>
       </div>
+    </div>
+  );
+}
+
+const REMINDER_OPTIONS = [
+  { value: 0, label: "At time of event" },
+  { value: 5, label: "5 minutes before" },
+  { value: 10, label: "10 minutes before" },
+  { value: 15, label: "15 minutes before" },
+  { value: 30, label: "30 minutes before" },
+  { value: 60, label: "1 hour before" },
+  { value: 120, label: "2 hours before" },
+  { value: 360, label: "6 hours before" },
+  { value: 720, label: "12 hours before" },
+  { value: 1440, label: "1 day before" },
+  { value: 2880, label: "2 days before" },
+  { value: 4320, label: "3 days before" },
+  { value: 10080, label: "1 week before" },
+];
+
+interface ReminderSlotProps {
+  label: string;
+  value?: number | null;
+  onChange: (v: number | null) => void;
+  canRemove: boolean;
+  onRemove?: () => void;
+}
+
+function ReminderSlot({ label, value, onChange, canRemove, onRemove }: ReminderSlotProps) {
+  return (
+    <div className="flex items-center gap-2">
+      <Select
+        value={value?.toString() ?? "15"}
+        onValueChange={(v) => onChange(parseInt(v))}
+      >
+        <SelectTrigger className="h-10 rounded-xl bg-background flex-1 text-sm">
+          <SelectValue placeholder="Choose time" />
+        </SelectTrigger>
+        <SelectContent>
+          {REMINDER_OPTIONS.map(opt => (
+            <SelectItem key={opt.value} value={opt.value.toString()}>{opt.label}</SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      {canRemove && (
+        <button
+          type="button"
+          onClick={onRemove}
+          className="w-8 h-8 flex items-center justify-center rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors flex-shrink-0"
+          title={`Remove ${label}`}
+        >
+          <X className="w-4 h-4" />
+        </button>
+      )}
     </div>
   );
 }

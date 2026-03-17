@@ -14,6 +14,8 @@ export const meetingsTable = pgTable("meetings", {
   meetingUrl: text("meeting_url"),
   notes: text("notes"),
   reminderMinutes: integer("reminder_minutes").default(15),
+  reminderMinutes2: integer("reminder_minutes_2"),
+  reminderMinutes3: integer("reminder_minutes_3"),
   color: text("color").default("#6366f1"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
