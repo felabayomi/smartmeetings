@@ -100,7 +100,15 @@ export function MeetingDetailModal({ meeting, isOpen, onClose, onEdit }: Meeting
 
               {meeting.meetingUrl && (
                 <DetailRow icon={<Link2 className="w-4 h-4" />} color={color}>
-                  <span className="text-xs text-muted-foreground break-all line-clamp-2">{meeting.meetingUrl}</span>
+                  <a
+                    href={meeting.meetingUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs break-all line-clamp-2 underline underline-offset-2"
+                    style={{ color }}
+                  >
+                    {meeting.meetingUrl}
+                  </a>
                 </DetailRow>
               )}
 
