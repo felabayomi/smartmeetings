@@ -120,24 +120,28 @@ export function AiUploadModal({ isOpen, onClose, onExtracted }: AiUploadModalPro
                 initial={{ opacity: 0, scale: 0.95 }}
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0, scale: 0.95 }}
-                className={cn(
-                  "border-2 border-dashed rounded-2xl p-10 flex flex-col items-center justify-center text-center cursor-pointer transition-all duration-300",
-                  isDragging ? "border-primary bg-primary/5" : "border-border hover:border-primary/50 hover:bg-muted/50"
-                )}
-                onDragOver={onDragOver}
-                onDragLeave={onDragLeave}
-                onDrop={onDrop}
-                onClick={() => fileInputRef.current?.click()}
               >
-                <div className="w-14 h-14 rounded-full bg-muted flex items-center justify-center mb-4">
-                  <Upload className="w-6 h-6 text-muted-foreground" />
-                </div>
-                <h3 className="font-semibold text-foreground text-lg mb-1">Click or drag image here</h3>
-                <p className="text-sm text-muted-foreground">PNG, JPG, HEIC supported</p>
+                <label
+                  htmlFor="meeting-image-upload"
+                  className={cn(
+                    "border-2 border-dashed rounded-2xl p-10 flex flex-col items-center justify-center text-center cursor-pointer transition-all duration-300 block",
+                    isDragging ? "border-primary bg-primary/5" : "border-border hover:border-primary/50 hover:bg-muted/50"
+                  )}
+                  onDragOver={onDragOver}
+                  onDragLeave={onDragLeave}
+                  onDrop={onDrop}
+                >
+                  <div className="w-14 h-14 rounded-full bg-muted flex items-center justify-center mb-4">
+                    <Upload className="w-6 h-6 text-muted-foreground" />
+                  </div>
+                  <h3 className="font-semibold text-foreground text-lg mb-1">Tap to choose image</h3>
+                  <p className="text-sm text-muted-foreground">PNG, JPG, HEIC, screenshots — all supported</p>
+                </label>
                 <input
+                  id="meeting-image-upload"
                   type="file"
-                  className="hidden"
-                  accept="image/*"
+                  className="sr-only"
+                  accept="image/*,image/heic,image/heif"
                   ref={fileInputRef}
                   onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])}
                 />
