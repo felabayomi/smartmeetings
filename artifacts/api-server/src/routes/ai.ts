@@ -1,8 +1,32 @@
 import { Router, type IRouter } from "express";
 import { openai } from "@workspace/integrations-openai-ai-server";
 import { ExtractMeetingFromImageBody } from "@workspace/api-zod";
+import { toZonedTime, fromZonedTime, format as tzFormat } from "date-fns-tz";
 
 const router: IRouter = Router();
+const APP_TZ = "America/New_York";
+
+/**
+ * Convert an ISO datetime string with optional source timezone to an
+ * EST ISO string. Falls back gracefully if conversion fails.
+ */
+function convertToEST(isoString: string | null, sourceTz?: string | null): string | null {
+  if (!isoString) return null;
+  try {
+    let utcDate: Date;
+    if (sourceTz && sourceTz !== APP_TZ && sourceTz !== "EST" && sourceTz !== "ET") {
+      // Treat the ISO string as being in the source timezone, then convert
+      utcDate = fromZonedTime(isoString.replace("Z", ""), sourceTz);
+    } else {
+      // Already UTC or EST — just parse
+      utcDate = new Date(isoString);
+    }
+    if (isNaN(utcDate.getTime())) return null;
+    return utcDate.toISOString();
+  } catch {
+    return null;
+  }
+}
 
 router.post("/ai/extract-meeting", async (req, res) => {
   try {
@@ -25,12 +49,17 @@ CRITICAL RULES FOR IDENTIFYING THE ORGANIZER:
 - Google Calendar invite: Look for "Organizer:" label explicitly.
 - Generic email: The FROM address or the person described as "host" is the organizer.
 
+TIMEZONE RULES:
+- Always extract the timezone shown in the image and put it in the "timezone" field.
+- Return startTime and endTime as ISO 8601 strings in that detected timezone (e.g., "2026-03-23T15:00:00").
+- Do NOT convert yourself — the server will convert to Eastern Time.
+
 Extract all meeting information and return it as a JSON object with these fields:
 - title: The actual meeting/event name (NOT including the attendee's name if it's a booking title format)
 - description: Brief description of the meeting purpose or agenda
-- startTime: ISO 8601 datetime string (e.g., "2026-03-23T15:00:00"). Be precise with AM/PM.
+- startTime: ISO 8601 datetime string in the detected timezone (e.g., "2026-03-23T15:00:00"). Be precise with AM/PM.
 - endTime: ISO 8601 datetime string if visible
-- timezone: Timezone string if mentioned (e.g., "America/New_York", "America/Los_Angeles", "Eastern Time")
+- timezone: IANA timezone string if mentioned (e.g., "America/New_York", "America/Los_Angeles", "America/Chicago"). Map common abbreviations: EST/ET → "America/New_York", PST/PT → "America/Los_Angeles", CST/CT → "America/Chicago", MST/MT → "America/Denver".
 - location: Physical address or virtual platform name
 - organizer: The HOST or ORGANIZER of the meeting — the person running it, NOT the attendee
 - meetingUrl: Any join link, meeting URL, or video call link visible
@@ -45,9 +74,7 @@ Today's date for reference: ${new Date().toISOString().split('T')[0]}`,
           content: [
             {
               type: "image_url",
-              image_url: {
-                url: `data:${mimeType};base64,${imageBase64}`,
-              },
+              image_url: { url: `data:${mimeType};base64,${imageBase64}` },
             },
             {
               type: "text",
@@ -59,23 +86,32 @@ Today's date for reference: ${new Date().toISOString().split('T')[0]}`,
     });
 
     const content = response.choices[0]?.message?.content ?? "{}";
-    
+
     let extracted: Record<string, unknown> = {};
     try {
       const jsonMatch = content.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        extracted = JSON.parse(jsonMatch[0]);
-      }
+      if (jsonMatch) extracted = JSON.parse(jsonMatch[0]);
     } catch {
       console.error("Failed to parse AI response as JSON:", content);
+    }
+
+    const sourceTz = (extracted.timezone as string) ?? null;
+
+    // Convert startTime and endTime to EST
+    const startTimeEST = convertToEST(extracted.startTime as string | null, sourceTz);
+    const endTimeEST = convertToEST(extracted.endTime as string | null, sourceTz);
+
+    // Log conversion for visibility
+    if (sourceTz && sourceTz !== APP_TZ) {
+      console.log(`Converted from ${sourceTz} to EST: ${extracted.startTime} → ${startTimeEST}`);
     }
 
     res.json({
       title: extracted.title ?? null,
       description: extracted.description ?? null,
-      startTime: extracted.startTime ?? null,
-      endTime: extracted.endTime ?? null,
-      timezone: extracted.timezone ?? null,
+      startTime: startTimeEST,
+      endTime: endTimeEST,
+      timezone: APP_TZ, // always save as EST
       location: extracted.location ?? null,
       organizer: extracted.organizer ?? null,
       meetingUrl: extracted.meetingUrl ?? null,

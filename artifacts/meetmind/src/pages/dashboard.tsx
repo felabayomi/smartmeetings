@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { useGetMeetings } from '@workspace/api-client-react';
 import { Meeting } from '@workspace/api-client-react/src/generated/api.schemas';
-import { isToday, parseISO, isFuture, compareAsc } from 'date-fns';
+import { compareAsc, parseISO } from 'date-fns';
+import { isTodayEST, isFutureEST } from '@/lib/timezone';
 import { Plus, Camera, Loader2, CalendarX, BellRing, BellOff, Bell } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
@@ -45,10 +46,10 @@ export default function Dashboard() {
     setFormOpen(true);
   };
 
-  // Filter for Today's upcoming meetings
+  // Filter for today's upcoming meetings using EST timezone
   const todayUpcoming = meetings
     ? meetings
-        .filter(m => isToday(parseISO(m.startTime)) && isFuture(parseISO(m.startTime)))
+        .filter(m => isTodayEST(m.startTime) && isFutureEST(m.startTime))
         .sort((a, b) => compareAsc(parseISO(a.startTime), parseISO(b.startTime)))
     : [];
 

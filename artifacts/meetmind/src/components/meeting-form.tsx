@@ -5,8 +5,8 @@ import { z } from 'zod';
 import { useCreateMeeting, useUpdateMeeting, useDeleteMeeting } from '@workspace/api-client-react';
 import { Meeting } from '@workspace/api-client-react/src/generated/api.schemas';
 import { useQueryClient } from '@tanstack/react-query';
-import { format } from 'date-fns';
 import { cn } from '@/lib/utils';
+import { toDatetimeLocalEST, fromDatetimeLocalEST } from '@/lib/timezone';
 import { 
   Calendar, Clock, Link2, MapPin, AlignLeft, User, Bell, Palette, Loader2, Trash2, Plus, X
 } from 'lucide-react';
@@ -96,18 +96,8 @@ export function MeetingForm({ initialData, onSuccess, onCancel, isAiExtracted }:
     }
   });
 
-  // Format dates for local datetime input: YYYY-MM-DDThh:mm
-  const formatForInput = (dateString?: string | null) => {
-    if (!dateString) return '';
-    try {
-      const d = new Date(dateString);
-      if (isNaN(d.getTime())) return '';
-      // Shift to local timezone for the input
-      return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
-    } catch {
-      return '';
-    }
-  };
+  // Format dates for datetime-local input in EST
+  const formatForInput = (dateString?: string | null) => toDatetimeLocalEST(dateString);
 
   // Track how many reminder slots are visible (1–3)
   const countInitialSlots = () => {
@@ -136,7 +126,8 @@ export function MeetingForm({ initialData, onSuccess, onCancel, isAiExtracted }:
   });
 
   const onSubmit = (values: FormValues) => {
-    const toIso = (val?: string | null) => val ? new Date(val).toISOString() : null;
+    // Treat datetime-local values as EST and convert to UTC
+    const toIso = (val?: string | null) => fromDatetimeLocalEST(val);
 
     const payload = {
       ...values,
