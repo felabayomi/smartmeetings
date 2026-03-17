@@ -33,7 +33,7 @@ export function DayModal({ date, meetings, isOpen, onClose, onMeetingClick, onAd
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="sm:max-w-md p-0 overflow-hidden bg-card border border-border shadow-2xl rounded-2xl">
+      <DialogContent className="w-[calc(100vw-2rem)] sm:max-w-md p-0 overflow-hidden bg-card border border-border shadow-2xl rounded-2xl flex flex-col max-h-[90dvh]">
         <DialogTitle className="sr-only">{dateLabel}</DialogTitle>
         <DialogDescription className="sr-only">Meetings on {dateLabel}</DialogDescription>
 

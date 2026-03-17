@@ -13,7 +13,7 @@ interface AddMeetingChoiceModalProps {
 export function AddMeetingChoiceModal({ isOpen, onClose, onScan, onManual }: AddMeetingChoiceModalProps) {
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="sm:max-w-sm p-0 overflow-hidden bg-card border border-border shadow-2xl rounded-2xl">
+      <DialogContent className="w-[calc(100vw-2rem)] sm:max-w-sm p-0 overflow-hidden bg-card border border-border shadow-2xl rounded-2xl">
         <DialogTitle className="sr-only">Add a Meeting</DialogTitle>
         <DialogDescription className="sr-only">Choose how to add your meeting</DialogDescription>
 
