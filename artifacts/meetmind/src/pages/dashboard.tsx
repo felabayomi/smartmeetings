@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useGetMeetings } from '@workspace/api-client-react';
 import { Meeting } from '@workspace/api-client-react/src/generated/api.schemas';
 import { compareAsc, parseISO, format } from 'date-fns';
-import { isTodayEST, isFutureEST, fromDatetimeLocalEST } from '@/lib/timezone';
+import { isTodayEST, fromDatetimeLocalEST } from '@/lib/timezone';
 import { Plus, Camera, Loader2, CalendarX, BellRing, BellOff, Bell } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
@@ -126,7 +126,7 @@ export default function Dashboard() {
   // ── Data ────────────────────────────────────────────────────────────────────
   const todayUpcoming = meetings
     ? meetings
-        .filter(m => isTodayEST(m.startTime) && isFutureEST(m.startTime))
+        .filter(m => isTodayEST(m.startTime))
         .sort((a, b) => compareAsc(parseISO(a.startTime), parseISO(b.startTime)))
     : [];
 
@@ -243,7 +243,7 @@ export default function Dashboard() {
         ) : todayUpcoming.length > 0 ? (
           <div className="space-y-3">
             <h2 className="text-xl font-display font-bold text-foreground flex items-center">
-              Today <span className="ml-3 px-2 py-0.5 rounded-full bg-primary/10 text-primary text-xs font-bold">{todayUpcoming.length} upcoming</span>
+              Today <span className="ml-3 px-2 py-0.5 rounded-full bg-primary/10 text-primary text-xs font-bold">{todayUpcoming.length} {todayUpcoming.length === 1 ? 'meeting' : 'meetings'}</span>
             </h2>
             <div className="flex space-x-4 overflow-x-auto pb-6 hide-scrollbar snap-x">
               {todayUpcoming.map(meeting => (
@@ -258,7 +258,7 @@ export default function Dashboard() {
             <div className="w-16 h-16 rounded-full bg-muted/50 flex items-center justify-center mb-4">
               <CalendarX className="w-8 h-8 text-muted-foreground" />
             </div>
-            <h3 className="font-display font-bold text-lg text-foreground">No upcoming meetings today</h3>
+            <h3 className="font-display font-bold text-lg text-foreground">No meetings today</h3>
             <p className="text-muted-foreground mt-1 max-w-sm">You have a clear schedule. Time to focus on deep work or take a break!</p>
           </div>
         )}
