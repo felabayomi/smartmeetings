@@ -1,0 +1,91 @@
+import { useState, useEffect, useCallback } from "react";
+
+const BASE_URL = import.meta.env.BASE_URL || "/";
+const API_BASE = BASE_URL.endsWith("/") ? BASE_URL.slice(0, -1) : BASE_URL;
+
+async function getVapidKey(): Promise<string> {
+  const res = await fetch(`${API_BASE}/api/push/vapid-key`);
+  if (!res.ok) throw new Error("Failed to fetch VAPID key");
+  const { publicKey } = await res.json();
+  return publicKey;
+}
+
+function urlBase64ToUint8Array(base64String: string): Uint8Array {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(base64);
+  const output = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) output[i] = raw.charCodeAt(i);
+  return output;
+}
+
+export type PushState = "unsupported" | "denied" | "prompt" | "subscribed" | "loading";
+
+export function usePushNotifications() {
+  const [state, setState] = useState<PushState>("loading");
+
+  useEffect(() => {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+      setState("unsupported");
+      return;
+    }
+    if (Notification.permission === "denied") {
+      setState("denied");
+      return;
+    }
+    // Check if already subscribed
+    navigator.serviceWorker.ready.then((reg) => {
+      reg.pushManager.getSubscription().then((sub) => {
+        setState(sub ? "subscribed" : "prompt");
+      });
+    });
+  }, []);
+
+  const subscribe = useCallback(async () => {
+    setState("loading");
+    try {
+      const permission = await Notification.requestPermission();
+      if (permission !== "granted") {
+        setState("denied");
+        return;
+      }
+      const vapidKey = await getVapidKey();
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(vapidKey),
+      });
+      await fetch(`${API_BASE}/api/push/subscribe`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(sub),
+      });
+      setState("subscribed");
+    } catch (err) {
+      console.error("Push subscribe error:", err);
+      setState("prompt");
+    }
+  }, []);
+
+  const unsubscribe = useCallback(async () => {
+    setState("loading");
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.getSubscription();
+      if (sub) {
+        await fetch(`${API_BASE}/api/push/unsubscribe`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ endpoint: sub.endpoint }),
+        });
+        await sub.unsubscribe();
+      }
+      setState("prompt");
+    } catch (err) {
+      console.error("Push unsubscribe error:", err);
+      setState("subscribed");
+    }
+  }, []);
+
+  return { state, subscribe, unsubscribe };
+}

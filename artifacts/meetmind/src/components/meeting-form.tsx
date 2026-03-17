@@ -301,7 +301,13 @@ export function MeetingForm({ initialData, onSuccess, onCancel, isAiExtracted }:
                         <SelectItem value="15">15 minutes before</SelectItem>
                         <SelectItem value="30">30 minutes before</SelectItem>
                         <SelectItem value="60">1 hour before</SelectItem>
+                        <SelectItem value="120">2 hours before</SelectItem>
+                        <SelectItem value="360">6 hours before</SelectItem>
+                        <SelectItem value="720">12 hours before</SelectItem>
                         <SelectItem value="1440">1 day before</SelectItem>
+                        <SelectItem value="2880">2 days before</SelectItem>
+                        <SelectItem value="4320">3 days before</SelectItem>
+                        <SelectItem value="10080">1 week before</SelectItem>
                       </SelectContent>
                     </Select>
                     <FormMessage />
