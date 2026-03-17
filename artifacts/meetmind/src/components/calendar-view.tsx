@@ -132,7 +132,7 @@ export function CalendarView({ meetings, onMeetingClick, onDayClick }: CalendarV
                       return (
                         <div
                           key={meeting.id}
-                          onClick={(e) => { e.stopPropagation(); onMeetingClick(meeting); }}
+                          onClick={(e) => { e.stopPropagation(); onDayClick(day); }}
                           className="group relative flex items-stretch rounded-md overflow-hidden cursor-pointer hover:opacity-90 active:scale-95 transition-all"
                           style={{ backgroundColor: `${color}18` }}
                           title={`${formatTimeEST(meeting.startTime, 'h:mm a')} · ${meeting.title}`}
