@@ -3,7 +3,7 @@ import { useGetMeetings } from '@workspace/api-client-react';
 import { Meeting } from '@workspace/api-client-react/src/generated/api.schemas';
 import { compareAsc, parseISO } from 'date-fns';
 import { isTodayEST, isFutureEST } from '@/lib/timezone';
-import { Plus, Loader2, CalendarX, BellRing, BellOff, Bell } from 'lucide-react';
+import { Plus, Camera, Loader2, CalendarX, BellRing, BellOff, Bell } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Layout } from '@/components/layout';
@@ -47,8 +47,15 @@ export default function Dashboard() {
 
   // ── Handlers ────────────────────────────────────────────────────────────────
 
-  // Opens choice modal; optionally pre-seeds a date for the manual path
-  const openNewMeeting = (date?: Date) => {
+  // Header "New Meeting" → directly open blank form
+  const openNewMeeting = () => {
+    setSelectedMeeting(undefined);
+    setIsAiExtracted(false);
+    setFormOpen(true);
+  };
+
+  // Calendar day modal "Add Meeting on [date]" → show Scan vs Manual choice
+  const openChoiceForDate = (date: Date) => {
     setPendingDate(date);
     setChoiceOpen(true);
   };
@@ -89,12 +96,10 @@ export default function Dashboard() {
     setDayOpen(true);
   };
 
-  // From day modal, user clicks "Add Meeting" → edit form pre-filled with date
+  // From day modal, user clicks "Add Meeting" → show Scan vs Manual choice
   const handleAddFromDay = (date: Date) => {
-    setSelectedMeeting({ startTime: date.toISOString() });
-    setIsAiExtracted(false);
     setDayOpen(false);
-    setFormOpen(true);
+    openChoiceForDate(date);
   };
 
   // From day modal, user clicks a meeting → detail view
@@ -180,11 +185,19 @@ export default function Dashboard() {
           <div className="flex gap-3 w-full sm:w-auto flex-wrap">
             {pushButton()}
             <Button
+              variant="outline"
+              className="flex-1 sm:flex-none rounded-xl h-12 px-4 border-primary/20 hover:bg-primary/5 text-primary hover:text-primary transition-all font-semibold"
+              onClick={() => setAiModalOpen(true)}
+            >
+              <Camera className="w-5 h-5 mr-2" />
+              Scan Image
+            </Button>
+            <Button
               className="flex-1 sm:flex-none rounded-xl h-12 px-6 shadow-lg shadow-primary/25 hover:shadow-xl hover:shadow-primary/30 transition-all hover:-translate-y-0.5 font-semibold bg-gradient-to-r from-primary to-primary/80"
               onClick={() => openNewMeeting()}
             >
               <Plus className="w-5 h-5 mr-2" />
-              Add Meeting
+              New Meeting
             </Button>
           </div>
         </div>
