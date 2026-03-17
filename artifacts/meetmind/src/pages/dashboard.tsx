@@ -11,6 +11,8 @@ import { MeetingCard } from '@/components/meeting-card';
 import { CalendarView } from '@/components/calendar-view';
 import { MeetingForm } from '@/components/meeting-form';
 import { AiUploadModal } from '@/components/ai-upload-modal';
+import { MeetingDetailModal } from '@/components/meeting-detail-modal';
+import { DayModal } from '@/components/day-modal';
 import { useReminders } from '@/hooks/use-reminders';
 import { usePushNotifications } from '@/hooks/use-push-notifications';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -18,25 +20,72 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 
 export default function Dashboard() {
   const { data: meetings, isLoading, error } = useGetMeetings();
-  useReminders(); // In-app background reminders (when app is open)
+  useReminders();
 
   const { state: pushState, subscribe, unsubscribe } = usePushNotifications();
 
+  // ── Edit / create form ──────────────────────────────────────────────────────
   const [formOpen, setFormOpen] = useState(false);
-  const [aiModalOpen, setAiModalOpen] = useState(false);
   const [selectedMeeting, setSelectedMeeting] = useState<Partial<Meeting> | undefined>(undefined);
   const [isAiExtracted, setIsAiExtracted] = useState(false);
 
-  const openNewMeeting = () => {
-    setSelectedMeeting(undefined);
+  // ── Read-only detail modal ──────────────────────────────────────────────────
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [detailMeeting, setDetailMeeting] = useState<Meeting | null>(null);
+
+  // ── Day summary modal ───────────────────────────────────────────────────────
+  const [dayOpen, setDayOpen] = useState(false);
+  const [selectedDay, setSelectedDay] = useState<Date | null>(null);
+
+  // ── AI upload ───────────────────────────────────────────────────────────────
+  const [aiModalOpen, setAiModalOpen] = useState(false);
+
+  // ── Handlers ────────────────────────────────────────────────────────────────
+
+  const openNewMeeting = (date?: Date) => {
+    setSelectedMeeting(date ? { startTime: date.toISOString() } : undefined);
     setIsAiExtracted(false);
     setFormOpen(true);
   };
 
-  const handleMeetingClick = (meeting: Meeting) => {
+  // Clicking a meeting card (Today section) → detail view
+  const handleMeetingCardClick = (meeting: Meeting) => {
+    setDetailMeeting(meeting);
+    setDetailOpen(true);
+  };
+
+  // Clicking a meeting event on the calendar → detail view
+  const handleCalendarMeetingClick = (meeting: Meeting) => {
+    setDetailMeeting(meeting);
+    setDetailOpen(true);
+  };
+
+  // From detail modal, user clicks Edit → edit form
+  const handleEditFromDetail = (meeting: Meeting) => {
     setSelectedMeeting(meeting);
     setIsAiExtracted(false);
+    setDetailOpen(false);
     setFormOpen(true);
+  };
+
+  // Clicking a blank day on the calendar → day modal
+  const handleDayClick = (date: Date) => {
+    setSelectedDay(date);
+    setDayOpen(true);
+  };
+
+  // From day modal, user clicks "Add Meeting" → edit form pre-filled with date
+  const handleAddFromDay = (date: Date) => {
+    setSelectedMeeting({ startTime: date.toISOString() });
+    setIsAiExtracted(false);
+    setDayOpen(false);
+    setFormOpen(true);
+  };
+
+  // From day modal, user clicks a meeting → detail view
+  const handleMeetingFromDay = (meeting: Meeting) => {
+    setDetailMeeting(meeting);
+    setDetailOpen(true);
   };
 
   const handleAiExtracted = (extractedData: any) => {
@@ -46,13 +95,14 @@ export default function Dashboard() {
     setFormOpen(true);
   };
 
-  // Filter for today's upcoming meetings using EST timezone
+  // ── Data ────────────────────────────────────────────────────────────────────
   const todayUpcoming = meetings
     ? meetings
         .filter(m => isTodayEST(m.startTime) && isFutureEST(m.startTime))
         .sort((a, b) => compareAsc(parseISO(a.startTime), parseISO(b.startTime)))
     : [];
 
+  // ── Push notification button ────────────────────────────────────────────────
   const pushButton = () => {
     if (pushState === "unsupported") return null;
     if (pushState === "loading") return (
@@ -106,7 +156,7 @@ export default function Dashboard() {
     <Layout>
       <div className="space-y-8 pb-20">
 
-        {/* Header Actions */}
+        {/* Header */}
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
           <div>
             <h1 className="text-4xl font-display font-bold text-foreground">Welcome back</h1>
@@ -124,7 +174,7 @@ export default function Dashboard() {
             </Button>
             <Button
               className="flex-1 sm:flex-none rounded-xl h-12 px-6 shadow-lg shadow-primary/25 hover:shadow-xl hover:shadow-primary/30 transition-all hover:-translate-y-0.5 font-semibold bg-gradient-to-r from-primary to-primary/80"
-              onClick={openNewMeeting}
+              onClick={() => openNewMeeting()}
             >
               <Plus className="w-5 h-5 mr-2" />
               New Meeting
@@ -132,7 +182,7 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Push alert banner for first-time users */}
+        {/* Push alert banner */}
         <AnimatePresence>
           {pushState === "prompt" && (
             <motion.div
@@ -148,18 +198,14 @@ export default function Dashboard() {
                 <p className="font-semibold text-foreground text-sm">Never miss a meeting</p>
                 <p className="text-muted-foreground text-sm">Enable push alerts to get notified even when MeetMind is closed.</p>
               </div>
-              <Button
-                size="sm"
-                onClick={subscribe}
-                className="flex-shrink-0 rounded-xl bg-primary text-primary-foreground hover:bg-primary/90 font-semibold"
-              >
+              <Button size="sm" onClick={subscribe} className="flex-shrink-0 rounded-xl bg-primary text-primary-foreground hover:bg-primary/90 font-semibold">
                 Enable
               </Button>
             </motion.div>
           )}
         </AnimatePresence>
 
-        {/* Today's Horizontal Scroll */}
+        {/* Today's meetings */}
         {isLoading ? (
           <div className="flex space-x-4 overflow-x-auto pb-4">
             {[1, 2, 3].map(i => (
@@ -174,7 +220,7 @@ export default function Dashboard() {
             <div className="flex space-x-4 overflow-x-auto pb-6 hide-scrollbar snap-x">
               {todayUpcoming.map(meeting => (
                 <div key={meeting.id} className="min-w-[300px] w-[300px] sm:min-w-[350px] snap-start">
-                  <MeetingCard meeting={meeting} onClick={handleMeetingClick} />
+                  <MeetingCard meeting={meeting} onClick={handleMeetingCardClick} />
                 </div>
               ))}
             </div>
@@ -189,40 +235,54 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* Calendar Grid */}
+        {/* Calendar */}
         <div className="mt-8">
           {isLoading ? (
-            <div className="h-[600px] rounded-3xl bg-muted/20 animate-pulse border border-border" />
+            <div className="h-[640px] rounded-3xl bg-muted/20 animate-pulse border border-border" />
           ) : error ? (
             <div className="p-8 text-center text-destructive bg-destructive/10 rounded-2xl border border-destructive/20">
               Error loading meetings. Please try again.
             </div>
           ) : (
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.1, duration: 0.4 }}
-            >
+            <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1, duration: 0.4 }}>
               <CalendarView
                 meetings={meetings || []}
-                onMeetingClick={handleMeetingClick}
-                onDayClick={(date) => {
-                  setSelectedMeeting({ startTime: date.toISOString() });
-                  setFormOpen(true);
-                }}
+                onMeetingClick={handleCalendarMeetingClick}
+                onDayClick={handleDayClick}
               />
             </motion.div>
           )}
         </div>
       </div>
 
-      {/* Modals */}
+      {/* ── Modals ─────────────────────────────────────────────────────────────── */}
+
+      {/* AI image upload */}
       <AiUploadModal
         isOpen={aiModalOpen}
         onClose={() => setAiModalOpen(false)}
         onExtracted={handleAiExtracted}
       />
 
+      {/* Read-only meeting detail */}
+      <MeetingDetailModal
+        meeting={detailMeeting}
+        isOpen={detailOpen}
+        onClose={() => setDetailOpen(false)}
+        onEdit={handleEditFromDetail}
+      />
+
+      {/* Day summary */}
+      <DayModal
+        date={selectedDay}
+        meetings={meetings || []}
+        isOpen={dayOpen}
+        onClose={() => setDayOpen(false)}
+        onMeetingClick={handleMeetingFromDay}
+        onAddMeeting={handleAddFromDay}
+      />
+
+      {/* Create / edit form */}
       <Dialog open={formOpen} onOpenChange={setFormOpen}>
         <DialogContent className="sm:max-w-2xl p-0 overflow-hidden bg-transparent border-none shadow-none">
           <DialogTitle className="sr-only">Meeting Details</DialogTitle>
