@@ -51,7 +51,7 @@ export function CalendarView({ meetings, onMeetingClick, onDayClick }: CalendarV
   };
 
   return (
-    <div className="bg-card border border-border shadow-xl shadow-black/5 rounded-3xl overflow-hidden flex flex-col h-[600px] md:h-[700px]">
+    <div className="bg-card border border-border shadow-xl shadow-black/5 rounded-3xl overflow-hidden flex flex-col h-[640px] md:h-[720px]">
       {/* Header */}
       <div className="flex items-center justify-between p-6 border-b border-border bg-muted/20">
         <div>
@@ -126,25 +126,41 @@ export function CalendarView({ meetings, onMeetingClick, onDayClick }: CalendarV
                     </span>
                   </div>
 
-                  <div className="flex-1 overflow-y-auto hide-scrollbar space-y-1">
-                    {dayMeetings.slice(0, 4).map(meeting => (
+                  <div className="flex-1 overflow-y-auto hide-scrollbar space-y-0.5 mt-0.5">
+                    {dayMeetings.slice(0, 3).map(meeting => {
+                      const color = meeting.color || '#6366f1';
+                      return (
+                        <div
+                          key={meeting.id}
+                          onClick={(e) => { e.stopPropagation(); onMeetingClick(meeting); }}
+                          className="group relative flex items-stretch rounded-md overflow-hidden cursor-pointer hover:opacity-90 active:scale-95 transition-all"
+                          style={{ backgroundColor: `${color}18` }}
+                          title={`${formatTimeEST(meeting.startTime, 'h:mm a')} · ${meeting.title}`}
+                        >
+                          {/* Color stripe */}
+                          <div className="w-1 flex-shrink-0 rounded-l-md" style={{ backgroundColor: color }} />
+                          {/* Content */}
+                          <div className="px-1 py-0.5 min-w-0 flex-1">
+                            {/* Time — always visible */}
+                            <div
+                              className="text-[9px] md:text-[10px] font-bold leading-tight"
+                              style={{ color }}
+                            >
+                              {formatTimeEST(meeting.startTime, 'h:mm a')}
+                            </div>
+                            {/* Title — hidden on very small cells, visible md+ */}
+                            <div className="hidden md:block text-[9px] leading-tight truncate text-foreground/70 font-medium">
+                              {meeting.title}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {dayMeetings.length > 3 && (
                       <div
-                        key={meeting.id}
-                        onClick={(e) => { e.stopPropagation(); onMeetingClick(meeting); }}
-                        className="text-[10px] md:text-xs px-1.5 py-1 rounded truncate border hover:brightness-95 transition-all"
-                        style={{
-                          backgroundColor: `${meeting.color || '#6366f1'}15`,
-                          borderColor: `${meeting.color || '#6366f1'}30`,
-                          color: meeting.color || '#6366f1',
-                        }}
+                        className="text-[9px] md:text-[10px] text-muted-foreground font-semibold pl-1.5 py-0.5"
                       >
-                        <span className="font-semibold mr-1">{formatTimeEST(meeting.startTime, 'h:mm')}</span>
-                        {meeting.title}
-                      </div>
-                    ))}
-                    {dayMeetings.length > 4 && (
-                      <div className="text-[10px] text-muted-foreground font-medium pl-1">
-                        +{dayMeetings.length - 4} more
+                        +{dayMeetings.length - 3} more
                       </div>
                     )}
                   </div>
