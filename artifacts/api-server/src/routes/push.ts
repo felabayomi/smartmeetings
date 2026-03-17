@@ -78,15 +78,27 @@ router.post("/push/unsubscribe", async (req, res) => {
 // ── Background scheduler ──────────────────────────────────────────────────────
 // Runs every 60 seconds. For each meeting, checks all configured reminder slots
 // and sends a push notification for any whose fire-time falls in this tick.
+// An in-memory sent-log prevents duplicates when tick windows overlap.
+
+// key: "meetingId-reminderMins-fireAtMinute" → timestamp when last sent
+const sentLog = new Map<string, number>();
 
 async function sendReminderNotifications() {
   try {
     const now = new Date();
-    const checkAheadMs = 65 * 1000; // slightly over 60 s to avoid gaps
+    // Look back 65 s so a slightly-delayed tick never misses a reminder.
+    // The sentLog prevents the same notification firing twice.
+    const windowStart = new Date(now.getTime() - 65 * 1000);
 
     const meetings = await db.select().from(meetingsTable);
     const subs = await db.select().from(pushSubscriptionsTable);
     if (!subs.length) return;
+
+    // Purge stale sentLog entries (older than 10 minutes)
+    const pruneThreshold = now.getTime() - 10 * 60 * 1000;
+    for (const [k, t] of sentLog) {
+      if (t < pruneThreshold) sentLog.delete(k);
+    }
 
     for (const meeting of meetings) {
       const start = new Date(meeting.startTime);
@@ -101,7 +113,12 @@ async function sendReminderNotifications() {
       for (const mins of reminderSlots) {
         const fireAt = new Date(start.getTime() - mins * 60 * 1000);
 
-        if (fireAt >= now && fireAt < new Date(now.getTime() + checkAheadMs)) {
+        // Check if this fire-time falls within the current window
+        if (fireAt >= windowStart && fireAt <= now) {
+          // Deduplicate: skip if we already sent this reminder in the last 5 minutes
+          const dedupKey = `m${meeting.id}-r${mins}-${Math.floor(fireAt.getTime() / 60000)}`;
+          if (sentLog.has(dedupKey)) continue;
+          sentLog.set(dedupKey, now.getTime());
           const minutesUntil = Math.round((start.getTime() - now.getTime()) / 60000);
           const label = timeLabel(minutesUntil);
 
