@@ -103,18 +103,10 @@ export function MeetingDetailModal({ meeting, isOpen, onClose, onEdit }: Meeting
               </DetailRow>
             )}
 
-            {/* Meeting URL */}
+            {/* Meeting URL — shown as a row with the link for reference */}
             {meeting.meetingUrl && (
               <DetailRow icon={<Link2 className="w-4 h-4" />} color={color}>
-                <a
-                  href={meeting.meetingUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-primary underline underline-offset-2 hover:text-primary/80 flex items-center gap-1 truncate"
-                >
-                  Join meeting
-                  <ExternalLink className="w-3 h-3 flex-shrink-0" />
-                </a>
+                <span className="text-sm text-muted-foreground truncate block">{meeting.meetingUrl}</span>
               </DetailRow>
             )}
 
@@ -147,18 +139,38 @@ export function MeetingDetailModal({ meeting, isOpen, onClose, onEdit }: Meeting
         </div>
 
         {/* Footer */}
-        <div className="px-6 pb-6 flex justify-end gap-3">
-          <Button variant="outline" onClick={onClose} className="rounded-xl h-10 px-5">
-            Close
-          </Button>
-          <Button
-            onClick={() => { onClose(); onEdit(meeting); }}
-            className="rounded-xl h-10 px-5 font-semibold"
-            style={{ backgroundColor: color, color: '#fff' }}
-          >
-            <Pencil className="w-4 h-4 mr-2" />
-            Edit
-          </Button>
+        <div className="px-6 pb-6 space-y-3">
+          {/* Join Meeting — prominent button when a URL exists */}
+          {meeting.meetingUrl && (
+            <a
+              href={meeting.meetingUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex w-full"
+            >
+              <Button
+                className="w-full rounded-xl h-11 font-semibold gap-2 text-white"
+                style={{ backgroundColor: color }}
+              >
+                <ExternalLink className="w-4 h-4" />
+                Join Meeting
+              </Button>
+            </a>
+          )}
+
+          <div className="flex justify-end gap-3">
+            <Button variant="outline" onClick={onClose} className="rounded-xl h-10 px-5">
+              Close
+            </Button>
+            <Button
+              onClick={() => { onClose(); onEdit(meeting); }}
+              className="rounded-xl h-10 px-5 font-semibold"
+              style={{ backgroundColor: color, color: '#fff' }}
+            >
+              <Pencil className="w-4 h-4 mr-2" />
+              Edit
+            </Button>
+          </div>
         </div>
       </DialogContent>
     </Dialog>
