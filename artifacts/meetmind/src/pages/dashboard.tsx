@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
 import { useGetMeetings } from '@workspace/api-client-react';
 import { Meeting } from '@workspace/api-client-react/src/generated/api.schemas';
-import { compareAsc, parseISO } from 'date-fns';
-import { isTodayEST, isFutureEST } from '@/lib/timezone';
+import { compareAsc, parseISO, format } from 'date-fns';
+import { isTodayEST, isFutureEST, fromDatetimeLocalEST } from '@/lib/timezone';
 import { Plus, Camera, Loader2, CalendarX, BellRing, BellOff, Bell } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
@@ -65,7 +65,15 @@ export default function Dashboard() {
   };
 
   const handleChooseManual = () => {
-    setSelectedMeeting(pendingDate ? { startTime: pendingDate.toISOString() } : undefined);
+    // pendingDate comes from the calendar grid which uses timezone-shifted dates.
+    // format(pendingDate, 'yyyy-MM-dd') reads the correct calendar date from it,
+    // then fromDatetimeLocalEST converts "9:00 AM on that date in EST" to a real UTC ISO.
+    let startTime: string | undefined;
+    if (pendingDate) {
+      const dateStr = format(pendingDate, 'yyyy-MM-dd');
+      startTime = fromDatetimeLocalEST(`${dateStr}T09:00`) ?? undefined;
+    }
+    setSelectedMeeting(startTime ? { startTime } : undefined);
     setIsAiExtracted(false);
     setFormOpen(true);
   };
