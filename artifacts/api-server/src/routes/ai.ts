@@ -13,14 +13,11 @@ const APP_TZ = "America/New_York";
 function convertToEST(isoString: string | null, sourceTz?: string | null): string | null {
   if (!isoString) return null;
   try {
-    let utcDate: Date;
-    if (sourceTz && sourceTz !== APP_TZ && sourceTz !== "EST" && sourceTz !== "ET") {
-      // Treat the ISO string as being in the source timezone, then convert
-      utcDate = fromZonedTime(isoString.replace("Z", ""), sourceTz);
-    } else {
-      // Already UTC or EST — just parse
-      utcDate = new Date(isoString);
-    }
+    // Always use fromZonedTime so that a bare ISO string (no Z) is treated as
+    // local time in the source timezone — never as UTC.
+    // If no timezone was detected, default to Eastern (the app's timezone).
+    const tz = sourceTz || APP_TZ;
+    const utcDate = fromZonedTime(isoString.replace("Z", ""), tz);
     if (isNaN(utcDate.getTime())) return null;
     return utcDate.toISOString();
   } catch {
