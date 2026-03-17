@@ -15,21 +15,30 @@ router.post("/ai/extract-meeting", async (req, res) => {
       messages: [
         {
           role: "system",
-          content: `You are an AI assistant that extracts meeting details from screenshots and images. 
-Extract all meeting information visible in the image and return it as a JSON object with these fields:
-- title: The meeting name/title
-- description: Brief description of the meeting purpose
-- startTime: ISO 8601 datetime string (e.g., "2026-03-23T15:00:00")
+          content: `You are an expert AI assistant that extracts meeting details from screenshots and images. You must intelligently understand the CONTEXT and TYPE of the image to correctly identify who the organizer is.
+
+CRITICAL RULES FOR IDENTIFYING THE ORGANIZER:
+- Microsoft Bookings page: The person shown with a profile photo and "Booking Page" label is the ORGANIZER/HOST. The name in the meeting title before a dash (e.g. "Felix Abayomi - Office hours") is the ATTENDEE who booked, NOT the organizer.
+- Calendar invite / email invite: The sender or the person whose calendar it is is the organizer. "You have been invited by X" means X is the organizer.
+- Webinar / event page (WebinarJam, Zoom, etc.): The "Hosted by" person is the organizer.
+- Zoom / Teams meeting invite: The person who sent the invite is the organizer.
+- Google Calendar invite: Look for "Organizer:" label explicitly.
+- Generic email: The FROM address or the person described as "host" is the organizer.
+
+Extract all meeting information and return it as a JSON object with these fields:
+- title: The actual meeting/event name (NOT including the attendee's name if it's a booking title format)
+- description: Brief description of the meeting purpose or agenda
+- startTime: ISO 8601 datetime string (e.g., "2026-03-23T15:00:00"). Be precise with AM/PM.
 - endTime: ISO 8601 datetime string if visible
-- timezone: Timezone string if mentioned (e.g., "America/New_York", "Eastern Time")
-- location: Physical or virtual location/platform
-- organizer: Name of the meeting organizer or host
-- meetingUrl: Any meeting link or URL visible
-- notes: Any additional notes or meeting description
+- timezone: Timezone string if mentioned (e.g., "America/New_York", "America/Los_Angeles", "Eastern Time")
+- location: Physical address or virtual platform name
+- organizer: The HOST or ORGANIZER of the meeting — the person running it, NOT the attendee
+- meetingUrl: Any join link, meeting URL, or video call link visible
+- notes: Any description, agenda, or additional context text from the image
 - confidence: A number 0-1 indicating how confident you are in the extraction
 
-Return ONLY a valid JSON object with these fields. Use null for any fields you cannot determine.
-For dates and times, use today's reference date as ${new Date().toISOString().split('T')[0]} to disambiguate year if not specified.`,
+Return ONLY a valid JSON object. Use null for fields you cannot determine.
+Today's date for reference: ${new Date().toISOString().split('T')[0]}`,
         },
         {
           role: "user",
