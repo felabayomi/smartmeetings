@@ -19,3 +19,4 @@
 
 export * from "./meetings";
 export * from "./push_subscriptions";
+export * from "./notification_log";
