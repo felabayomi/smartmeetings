@@ -233,7 +233,7 @@ async function sendReminderNotifications() {
         try {
           const { client, fromEmail } = await getUncachableResendClient();
           await client.emails.send({
-            from: fromEmail || "MeetMind <onboarding@resend.dev>",
+            from: fromEmail || "MeetMind <reminders@smartmeetings.felixconsult.co>",
             to: REMINDER_EMAIL_TO,
             subject: `⏰ "${meeting.title}" starts in ${label}`,
             html: buildEmailHtml(meeting, label),

@@ -31,7 +31,7 @@ async function getCredentials(): Promise<{ apiKey: string; fromEmail: string }> 
 
   return {
     apiKey: data.settings.api_key,
-    fromEmail: data.settings.from_email ?? "MeetMind <onboarding@resend.dev>",
+    fromEmail: data.settings.from_email ?? "MeetMind <reminders@smartmeetings.felixconsult.co>",
   };
 }
 
