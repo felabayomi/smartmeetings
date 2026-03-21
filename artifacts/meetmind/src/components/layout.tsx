@@ -12,9 +12,9 @@ interface LayoutProps {
 function Logo({ className }: { className?: string }) {
   return (
     <img
-      src="/icon-192.png"
+      src="/logo-transparent.png"
       alt="Logo"
-      className={cn("rounded-xl object-cover", className)}
+      className={cn("object-contain", className)}
     />
   );
 }
@@ -32,7 +32,7 @@ export function Layout({ children }: LayoutProps) {
     <div className="min-h-screen bg-background flex flex-col md:flex-row font-sans">
       {/* Mobile Header */}
       <div className="md:hidden glass-panel sticky top-0 z-50 flex items-center justify-between p-4">
-        <Logo className="w-9 h-9 shadow-lg shadow-primary/20" />
+        <Logo className="w-14 h-14" />
         <Button variant="ghost" size="icon" onClick={() => setMobileMenuOpen(true)}>
           <Menu className="w-6 h-6" />
         </Button>
@@ -87,8 +87,8 @@ export function Layout({ children }: LayoutProps) {
 
       {/* Desktop Sidebar */}
       <div className="hidden md:flex w-72 flex-col border-r border-border/50 bg-card/50 backdrop-blur-xl p-6 sticky top-0 h-screen">
-        <div className="flex items-center gap-3 mb-12 px-2">
-          <Logo className="w-12 h-12 shadow-lg shadow-primary/20" />
+        <div className="flex items-center justify-center mb-10">
+          <Logo className="w-48 h-auto" />
         </div>
 
         <nav className="flex-1 space-y-2">
