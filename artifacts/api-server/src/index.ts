@@ -17,7 +17,7 @@ if (Number.isNaN(port) || port <= 0) {
 }
 
 async function ensureSchema() {
-  // Create notification_log if it doesn't already exist (dev & prod safe)
+  // notification_log table
   await db.execute(sql`
     CREATE TABLE IF NOT EXISTS notification_log (
       id          SERIAL PRIMARY KEY,
@@ -28,6 +28,18 @@ async function ensureSchema() {
       CONSTRAINT notification_log_meeting_reminder_fire_uniq
         UNIQUE (meeting_id, reminder_minutes, fire_at)
     )
+  `);
+
+  // Add calendar_token to meetings (multi-tenant support)
+  await db.execute(sql`
+    ALTER TABLE meetings
+      ADD COLUMN IF NOT EXISTS calendar_token TEXT NOT NULL DEFAULT 'admin/ark/felixdgreat'
+  `);
+
+  // Add calendar_token to push_subscriptions
+  await db.execute(sql`
+    ALTER TABLE push_subscriptions
+      ADD COLUMN IF NOT EXISTS calendar_token TEXT NOT NULL DEFAULT 'admin/ark/felixdgreat'
   `);
 }
 

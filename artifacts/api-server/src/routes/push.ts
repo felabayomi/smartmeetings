@@ -9,7 +9,7 @@ const router: IRouter = Router();
 const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || "BM4A8xrDgKpyDmGEpDZlROCwsijp8uvy4a-EnW2zNDdCqE3FF0Idg67CwNJq2lPLsu0xl6jNBrPCYLDaylc5Ypo";
 const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || "YzukqYDQpFl0ll7euuU3HnW0Of_0a-JRl43r_ZRqQCo";
 
-// Recipient for all email reminders
+const ADMIN_TOKEN = "admin/ark/felixdgreat";
 const REMINDER_EMAIL_TO = "arkgco@outlook.com";
 
 webPush.setVapidDetails("mailto:meetmind@app.com", VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
@@ -105,22 +105,24 @@ router.get("/push/vapid-key", (_req, res) => {
   res.json({ publicKey: VAPID_PUBLIC_KEY });
 });
 
-// Save a new push subscription
+// Save a new push subscription — tagged with the caller's calendar token
 router.post("/push/subscribe", async (req, res) => {
   try {
-    const { endpoint, keys } = req.body as {
+    const { endpoint, keys, calendarToken } = req.body as {
       endpoint: string;
       keys: { p256dh: string; auth: string };
+      calendarToken?: string;
     };
     if (!endpoint || !keys?.p256dh || !keys?.auth) {
       return res.status(400).json({ error: "Invalid subscription" });
     }
+    const token = (calendarToken && calendarToken.trim()) ? calendarToken.trim() : ADMIN_TOKEN;
     await db
       .insert(pushSubscriptionsTable)
-      .values({ endpoint, p256dh: keys.p256dh, auth: keys.auth })
+      .values({ calendarToken: token, endpoint, p256dh: keys.p256dh, auth: keys.auth })
       .onConflictDoUpdate({
         target: pushSubscriptionsTable.endpoint,
-        set: { p256dh: keys.p256dh, auth: keys.auth },
+        set: { calendarToken: token, p256dh: keys.p256dh, auth: keys.auth },
       });
     res.json({ success: true });
   } catch (err) {
@@ -148,11 +150,9 @@ router.post("/push/unsubscribe", async (req, res) => {
 // ── Background scheduler ──────────────────────────────────────────────────────
 // Runs every 60 seconds.
 //
-// Looks back 15 minutes so reminders missed during a server restart are
-// caught and delivered on the next tick after the server comes back up.
-//
-// Deduplication is DB-backed (notification_log) so it survives restarts.
-// Each triggered reminder fires BOTH a push notification AND an email.
+// Groups meetings by calendarToken, then sends push notifications ONLY to
+// subscribers of that same calendar. Email reminders go only to the admin
+// calendar (we know the admin's email; other calendars don't have one on file).
 
 async function sendReminderNotifications() {
   try {
@@ -162,7 +162,15 @@ async function sendReminderNotifications() {
     const meetings = await db.select().from(meetingsTable);
     const subs = await db.select().from(pushSubscriptionsTable);
 
-    // Load sent-log for dedup (email + push both keyed here)
+    // Build a lookup: calendarToken → subscribers
+    const subsByToken = new Map<string, typeof subs>();
+    for (const sub of subs) {
+      const list = subsByToken.get(sub.calendarToken) ?? [];
+      list.push(sub);
+      subsByToken.set(sub.calendarToken, list);
+    }
+
+    // Load sent-log for dedup
     const recentLog = await db
       .select()
       .from(notificationLogTable)
@@ -189,7 +197,7 @@ async function sendReminderNotifications() {
         const dedupKey = `m${meeting.id}-r${mins}-${fireAt.getTime()}`;
         if (alreadySent.has(dedupKey)) continue;
 
-        // Claim this slot in DB before sending (prevents races & duplicate sends)
+        // Claim slot in DB (prevents races & duplicate sends)
         try {
           await db
             .insert(notificationLogTable)
@@ -203,16 +211,20 @@ async function sendReminderNotifications() {
         const minutesUntil = Math.round((start.getTime() - now.getTime()) / 60000);
         const label = timeLabel(minutesUntil);
 
-        // ── Push notification ────────────────────────────────────────────────
-        if (subs.length) {
+        // ── Push: only to subscribers of THIS calendar ───────────────────────
+        const calendarSubs = subsByToken.get(meeting.calendarToken) ?? [];
+        if (calendarSubs.length) {
+          const calendarPath = meeting.calendarToken.startsWith("/")
+            ? meeting.calendarToken
+            : `/${meeting.calendarToken}`;
           const payload = JSON.stringify({
             title: `⏰ Meeting in ${label}`,
             body: `${meeting.title}${meeting.organizer ? ` · ${meeting.organizer}` : ""}`,
             tag: `meeting-${meeting.id}-r${mins}`,
-            data: { meetingId: meeting.id, url: "/admin/ark/felixdgreat" },
+            data: { meetingId: meeting.id, url: calendarPath },
           });
 
-          for (const sub of subs) {
+          for (const sub of calendarSubs) {
             try {
               await webPush.sendNotification(
                 { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
@@ -226,21 +238,23 @@ async function sendReminderNotifications() {
               }
             }
           }
-          console.log(`Push sent: "${meeting.title}" — ${mins} min reminder`);
+          console.log(`Push sent: "${meeting.title}" [${meeting.calendarToken}] — ${mins} min`);
         }
 
-        // ── Email via Resend ─────────────────────────────────────────────────
-        try {
-          const { client, fromEmail } = await getUncachableResendClient();
-          await client.emails.send({
-            from: fromEmail || "MeetMind <reminders@smartmeetings.felixconsult.co>",
-            to: REMINDER_EMAIL_TO,
-            subject: `⏰ "${meeting.title}" starts in ${label}`,
-            html: buildEmailHtml(meeting, label),
-          });
-          console.log(`Email sent: "${meeting.title}" — ${mins} min reminder → ${REMINDER_EMAIL_TO}`);
-        } catch (emailErr) {
-          safeLog(`Email error for "${meeting.title}":`, emailErr);
+        // ── Email: admin calendar only ───────────────────────────────────────
+        if (meeting.calendarToken === ADMIN_TOKEN) {
+          try {
+            const { client, fromEmail } = await getUncachableResendClient();
+            await client.emails.send({
+              from: fromEmail || "MeetMind <reminders@smartmeetings.felixconsult.co>",
+              to: REMINDER_EMAIL_TO,
+              subject: `⏰ "${meeting.title}" starts in ${label}`,
+              html: buildEmailHtml(meeting, label),
+            });
+            console.log(`Email sent: "${meeting.title}" — ${mins} min → ${REMINDER_EMAIL_TO}`);
+          } catch (emailErr) {
+            safeLog(`Email error for "${meeting.title}":`, emailErr);
+          }
         }
       }
     }

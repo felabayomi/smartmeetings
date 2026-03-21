@@ -4,6 +4,7 @@ import { z } from "zod/v4";
 
 export const meetingsTable = pgTable("meetings", {
   id: serial("id").primaryKey(),
+  calendarToken: text("calendar_token").notNull().default("admin/ark/felixdgreat"),
   title: text("title").notNull(),
   description: text("description"),
   startTime: timestamp("start_time", { withTimezone: true }).notNull(),

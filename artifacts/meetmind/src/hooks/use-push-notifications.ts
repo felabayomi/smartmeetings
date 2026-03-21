@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { getCalendarToken } from "@/lib/calendar-token";
 
 const BASE_URL = import.meta.env.BASE_URL || "/";
 const API_BASE = BASE_URL.endsWith("/") ? BASE_URL.slice(0, -1) : BASE_URL;
@@ -33,7 +34,6 @@ export function usePushNotifications() {
       setState("denied");
       return;
     }
-    // Check if already subscribed
     navigator.serviceWorker.ready.then((reg) => {
       reg.pushManager.getSubscription().then((sub) => {
         setState(sub ? "subscribed" : "prompt");
@@ -55,10 +55,12 @@ export function usePushNotifications() {
         userVisibleOnly: true,
         applicationServerKey: urlBase64ToUint8Array(vapidKey),
       });
+      const calendarToken = getCalendarToken();
+      const subJson = sub.toJSON();
       await fetch(`${API_BASE}/api/push/subscribe`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(sub),
+        body: JSON.stringify({ ...subJson, calendarToken }),
       });
       setState("subscribed");
     } catch (err) {

@@ -1,8 +1,10 @@
 import { Router, type IRouter } from "express";
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import { db, meetingsTable } from "@workspace/db";
 
 const router: IRouter = Router();
+
+const ADMIN_TOKEN = "admin/ark/felixdgreat";
 
 function safeLog(label: string, err: unknown) {
   try {
@@ -31,11 +33,20 @@ function num(val: unknown): number | null {
   return isNaN(n) ? null : n;
 }
 
-router.get("/meetings", async (_req, res) => {
+/** Extract calendar token from request header; fall back to admin token. */
+function getToken(req: { headers: Record<string, string | string[] | undefined> }): string {
+  const h = req.headers["x-calendar-token"];
+  const t = Array.isArray(h) ? h[0] : h;
+  return (t && t.trim()) ? t.trim() : ADMIN_TOKEN;
+}
+
+router.get("/meetings", async (req, res) => {
   try {
+    const token = getToken(req);
     const meetings = await db
       .select()
       .from(meetingsTable)
+      .where(eq(meetingsTable.calendarToken, token))
       .orderBy(meetingsTable.startTime);
     res.json(meetings);
   } catch (err) {
@@ -46,6 +57,7 @@ router.get("/meetings", async (_req, res) => {
 
 router.post("/meetings", async (req, res) => {
   try {
+    const token = getToken(req);
     const b = req.body as Record<string, unknown>;
 
     const title = str(b.title);
@@ -57,6 +69,7 @@ router.post("/meetings", async (req, res) => {
     const [meeting] = await db
       .insert(meetingsTable)
       .values({
+        calendarToken: token,
         title,
         description: str(b.description),
         startTime,
@@ -83,11 +96,12 @@ router.post("/meetings", async (req, res) => {
 
 router.get("/meetings/:id", async (req, res) => {
   try {
+    const token = getToken(req);
     const id = Number(req.params.id);
     const [meeting] = await db
       .select()
       .from(meetingsTable)
-      .where(eq(meetingsTable.id, id));
+      .where(and(eq(meetingsTable.id, id), eq(meetingsTable.calendarToken, token)));
     if (!meeting) return res.status(404).json({ error: "Meeting not found" });
     res.json(meeting);
   } catch (err) {
@@ -98,6 +112,7 @@ router.get("/meetings/:id", async (req, res) => {
 
 router.put("/meetings/:id", async (req, res) => {
   try {
+    const token = getToken(req);
     const id = Number(req.params.id);
     const b = req.body as Record<string, unknown>;
 
@@ -123,7 +138,7 @@ router.put("/meetings/:id", async (req, res) => {
     const [meeting] = await db
       .update(meetingsTable)
       .set(updateData)
-      .where(eq(meetingsTable.id, id))
+      .where(and(eq(meetingsTable.id, id), eq(meetingsTable.calendarToken, token)))
       .returning();
 
     if (!meeting) return res.status(404).json({ error: "Meeting not found" });
@@ -137,10 +152,11 @@ router.put("/meetings/:id", async (req, res) => {
 
 router.delete("/meetings/:id", async (req, res) => {
   try {
+    const token = getToken(req);
     const id = Number(req.params.id);
     const [deleted] = await db
       .delete(meetingsTable)
-      .where(eq(meetingsTable.id, id))
+      .where(and(eq(meetingsTable.id, id), eq(meetingsTable.calendarToken, token)))
       .returning();
     if (!deleted) return res.status(404).json({ error: "Meeting not found" });
     res.json({ success: true });

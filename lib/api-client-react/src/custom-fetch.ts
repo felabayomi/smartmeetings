@@ -2,6 +2,17 @@ export type CustomFetchOptions = RequestInit & {
   responseType?: "json" | "text" | "blob" | "auto";
 };
 
+// Module-level global headers injected into every request (e.g. X-Calendar-Token)
+const _globalHeaders = new Map<string, string>();
+
+export function setGlobalHeader(key: string, value: string) {
+  _globalHeaders.set(key.toLowerCase(), value);
+}
+
+export function clearGlobalHeader(key: string) {
+  _globalHeaders.delete(key.toLowerCase());
+}
+
 export type ErrorType<T = unknown> = ApiError<T>;
 
 export type BodyType<T> = T;
@@ -283,7 +294,8 @@ export async function customFetch<T = unknown>(
     throw new TypeError(`customFetch: ${method} requests cannot have a body.`);
   }
 
-  const headers = mergeHeaders(isRequest(input) ? input.headers : undefined, headersInit);
+  const globalHeadersInit = Object.fromEntries(_globalHeaders);
+  const headers = mergeHeaders(isRequest(input) ? input.headers : undefined, globalHeadersInit, headersInit);
 
   if (
     typeof init.body === "string" &&

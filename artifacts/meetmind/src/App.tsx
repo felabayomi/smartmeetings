@@ -3,6 +3,8 @@ import { Switch, Route, Router as WouterRouter } from "wouter";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { setGlobalHeader } from "@workspace/api-client-react";
+import { getCalendarToken, getRouterBase, persistToken } from "@/lib/calendar-token";
 
 // Pages
 import Dashboard from "./pages/dashboard";
@@ -18,9 +20,12 @@ const queryClient = new QueryClient({
   },
 });
 
-// Secret URL token baked in at build time.
-// The app is only visible at /<SECRET> — all other paths render blank.
-const SECRET = import.meta.env.VITE_CALENDAR_SECRET as string | undefined;
+// Resolve the calendar token once (may trigger a redirect for root visitors)
+const CALENDAR_TOKEN = getCalendarToken();
+// Persist so future visits to / return to the same calendar
+persistToken(CALENDAR_TOKEN);
+// Inject into every API request globally
+setGlobalHeader("x-calendar-token", CALENDAR_TOKEN);
 
 function ServiceWorkerRegistrar() {
   useEffect(() => {
@@ -45,13 +50,7 @@ function Router() {
 }
 
 function App() {
-  // If visiting the secret URL, use it as the router base so /list etc. work.
-  // If visiting any other path (including /), show the app normally at root.
-  const path = window.location.pathname;
-  const secretBase = SECRET ? `/${SECRET}` : null;
-  const base = secretBase && path.startsWith(secretBase)
-    ? secretBase
-    : import.meta.env.BASE_URL.replace(/\/$/, "");
+  const base = getRouterBase(CALENDAR_TOKEN);
 
   return (
     <QueryClientProvider client={queryClient}>
