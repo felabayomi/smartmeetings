@@ -6,6 +6,13 @@ const router: IRouter = Router();
 const API_KEY = process.env.MEETMIND_API_KEY || "ff29b04cc8e13580c3db8f804724c44a82c2af459b7b7395ccd75f5dfa10ec91";
 const ADMIN_TOKEN = "admin/ark/felixdgreat";
 
+// In-memory store of the last received booking payload for debugging
+let lastBookingDebug: {
+  receivedAt: string;
+  rawBody: unknown;
+  parsedStartTime: string | null;
+} | null = null;
+
 function toDate(val: unknown): Date | null {
   if (!val) return null;
   if (val instanceof Date) return isNaN(val.getTime()) ? null : val;
@@ -34,6 +41,26 @@ function combineDatetime(date: unknown, time: unknown, tz?: string): Date | null
   return isNaN(d.getTime()) ? null : d;
 }
 
+// ── GET /api/webhook/last-booking (debug) ────────────────────────────────────
+// Returns the raw body of the last booking received so we can diagnose date issues.
+// Protected by the same API key.
+router.get("/webhook/last-booking", (req, res) => {
+  const authHeader = req.headers["authorization"] ?? "";
+  const xApiKey = req.headers["x-api-key"] ?? "";
+  const provided =
+    (typeof authHeader === "string" && authHeader.startsWith("Bearer ")
+      ? authHeader.slice(7)
+      : "") || String(xApiKey);
+
+  if (!API_KEY || provided !== API_KEY) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  if (!lastBookingDebug) {
+    return res.json({ message: "No booking received yet since last server start" });
+  }
+  return res.json(lastBookingDebug);
+});
+
 // ── POST /api/webhook/booking ─────────────────────────────────────────────────
 // Accepts booking payloads from appointment.expeditionamerica.us and creates
 // a MeetMind meeting. The request must include:
@@ -60,6 +87,19 @@ router.post("/webhook/booking", async (req, res) => {
 
   // ── Log raw body for diagnostics ──────────────────────────────────────────
   console.log("Webhook /booking received:", JSON.stringify(req.body, null, 2));
+
+  // Capture raw payload for the debug endpoint
+  const b0 = req.body as Record<string, unknown>;
+  const parsedForDebug =
+    b0.startTime ?? b0.start ?? b0.datetime ?? b0.scheduledAt ??
+    b0.date ?? b0.appointmentDate ?? "(none found)";
+  lastBookingDebug = {
+    receivedAt: new Date().toISOString(),
+    rawBody: req.body,
+    parsedStartTime: parsedForDebug !== null && parsedForDebug !== undefined
+      ? String(parsedForDebug)
+      : null,
+  };
 
   try {
     const b = req.body as Record<string, unknown>;
