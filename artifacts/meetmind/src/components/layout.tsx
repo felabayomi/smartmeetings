@@ -1,12 +1,22 @@
 import React from 'react';
 import { Link, useLocation } from 'wouter';
-import { Calendar as CalendarIcon, List, Settings, Sparkles, Menu, X } from 'lucide-react';
+import { Calendar as CalendarIcon, List, Menu, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { motion, AnimatePresence } from 'framer-motion';
 
 interface LayoutProps {
   children: React.ReactNode;
+}
+
+function Logo({ className }: { className?: string }) {
+  return (
+    <img
+      src="/icon-192.png"
+      alt="Logo"
+      className={cn("rounded-xl object-cover", className)}
+    />
+  );
 }
 
 export function Layout({ children }: LayoutProps) {
@@ -22,12 +32,7 @@ export function Layout({ children }: LayoutProps) {
     <div className="min-h-screen bg-background flex flex-col md:flex-row font-sans">
       {/* Mobile Header */}
       <div className="md:hidden glass-panel sticky top-0 z-50 flex items-center justify-between p-4">
-        <div className="flex items-center gap-2">
-          <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-primary to-accent flex items-center justify-center shadow-lg shadow-primary/20">
-            <Sparkles className="w-4 h-4 text-white" />
-          </div>
-          <span className="font-display font-bold text-xl tracking-tight">MeetMind</span>
-        </div>
+        <Logo className="w-9 h-9 shadow-lg shadow-primary/20" />
         <Button variant="ghost" size="icon" onClick={() => setMobileMenuOpen(true)}>
           <Menu className="w-6 h-6" />
         </Button>
@@ -52,12 +57,7 @@ export function Layout({ children }: LayoutProps) {
               className="fixed top-0 left-0 bottom-0 w-3/4 max-w-sm bg-card z-50 p-6 flex flex-col shadow-2xl border-r border-border md:hidden"
             >
               <div className="flex items-center justify-between mb-8">
-                <div className="flex items-center gap-2">
-                  <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-primary to-accent flex items-center justify-center">
-                    <Sparkles className="w-4 h-4 text-white" />
-                  </div>
-                  <span className="font-display font-bold text-xl">MeetMind</span>
-                </div>
+                <Logo className="w-10 h-10" />
                 <Button variant="ghost" size="icon" onClick={() => setMobileMenuOpen(false)}>
                   <X className="w-5 h-5" />
                 </Button>
@@ -88,12 +88,7 @@ export function Layout({ children }: LayoutProps) {
       {/* Desktop Sidebar */}
       <div className="hidden md:flex w-72 flex-col border-r border-border/50 bg-card/50 backdrop-blur-xl p-6 sticky top-0 h-screen">
         <div className="flex items-center gap-3 mb-12 px-2">
-          <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-primary to-accent flex items-center justify-center shadow-lg shadow-primary/20">
-            <Sparkles className="w-5 h-5 text-white" />
-          </div>
-          <span className="font-display font-bold text-2xl tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-foreground to-foreground/70">
-            MeetMind
-          </span>
+          <Logo className="w-12 h-12 shadow-lg shadow-primary/20" />
         </div>
 
         <nav className="flex-1 space-y-2">

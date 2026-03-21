@@ -1,6 +1,6 @@
 {
-  "name": "MeetMind",
-  "short_name": "MeetMind",
+  "name": "Smart Meetings",
+  "short_name": "Smart Meetings",
   "description": "Smart AI-powered meeting calendar and reminder app.",
   "start_url": "/admin/ark/felixdgreat",
   "scope": "/",
