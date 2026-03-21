@@ -209,7 +209,7 @@ async function sendReminderNotifications() {
             title: `⏰ Meeting in ${label}`,
             body: `${meeting.title}${meeting.organizer ? ` · ${meeting.organizer}` : ""}`,
             tag: `meeting-${meeting.id}-r${mins}`,
-            data: { meetingId: meeting.id, url: "/26e409c2d89c" },
+            data: { meetingId: meeting.id, url: "/admin/ark/felixdgreat" },
           });
 
           for (const sub of subs) {
