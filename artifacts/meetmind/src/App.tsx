@@ -45,20 +45,12 @@ function Router() {
 }
 
 function App() {
-  // If a secret is configured and the current path doesn't start with it,
-  // render nothing — the page appears completely blank.
-  if (SECRET) {
-    const path = window.location.pathname;
-    const secretBase = `/${SECRET}`;
-    if (!path.startsWith(secretBase)) {
-      return null;
-    }
-  }
-
-  // Use the secret segment as the Wouter base so that existing routes
-  // (/ and /list) resolve under /<SECRET>/ automatically.
-  const base = SECRET
-    ? `/${SECRET}`
+  // If visiting the secret URL, use it as the router base so /list etc. work.
+  // If visiting any other path (including /), show the app normally at root.
+  const path = window.location.pathname;
+  const secretBase = SECRET ? `/${SECRET}` : null;
+  const base = secretBase && path.startsWith(secretBase)
+    ? secretBase
     : import.meta.env.BASE_URL.replace(/\/$/, "");
 
   return (
