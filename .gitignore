@@ -10,6 +10,8 @@ out-tsc
 
 # dependencies
 node_modules
+.pnpm-store/
+work/
 
 # IDEs and editors
 /.idea
@@ -28,6 +30,9 @@ node_modules
 !.vscode/extensions.json
 
 # misc
+*.env
+.env*
+!.env.example
 /.sass-cache
 /connect.lock
 /coverage
@@ -47,3 +52,6 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+
+.vercel
+.env*

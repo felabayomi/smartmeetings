@@ -1,0 +1,11 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "pnpm --filter @workspace/meetmind build",
+  "outputDirectory": "artifacts/meetmind/dist/public",
+  "installCommand": "pnpm install --frozen-lockfile"
+  ,"framework": "vite",
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api/index" },
+    { "source": "/((?!api/).*)", "destination": "/index.html" }
+  ]
+}
