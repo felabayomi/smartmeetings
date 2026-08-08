@@ -1,6 +1,9 @@
 // @ts-nocheck
 import pg from "pg";
 import { createClerkClient } from "@clerk/backend";
+import { randomUUID } from "node:crypto";
+import { addDays, addMinutes } from "date-fns";
+import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
 const clerk = createClerkClient({
@@ -8,6 +11,125 @@ const clerk = createClerkClient({
   publishableKey: process.env.CLERK_PUBLISHABLE_KEY || process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY || process.env.VITE_CLERK_PUBLISHABLE_KEY,
 });
 const allowedImageTypes = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
+let schedulingReady;
+
+const defaultAvailability = [
+  { day: 1, enabled: true, start: "09:00", end: "17:00" },
+  { day: 2, enabled: true, start: "09:00", end: "17:00" },
+  { day: 3, enabled: true, start: "09:00", end: "17:00" },
+  { day: 4, enabled: true, start: "09:00", end: "17:00" },
+  { day: 5, enabled: true, start: "09:00", end: "17:00" },
+  { day: 6, enabled: false, start: "09:00", end: "17:00" },
+  { day: 0, enabled: false, start: "09:00", end: "17:00" },
+];
+
+function ensureSchedulingTables() {
+  if (!schedulingReady) schedulingReady = pool.query(`
+    CREATE TABLE IF NOT EXISTS scheduling_profiles (
+      user_id TEXT PRIMARY KEY,
+      slug TEXT UNIQUE NOT NULL,
+      display_name TEXT NOT NULL,
+      timezone TEXT NOT NULL,
+      duration_minutes INTEGER NOT NULL DEFAULT 30,
+      buffer_minutes INTEGER NOT NULL DEFAULT 0,
+      availability JSONB NOT NULL DEFAULT '[]'::jsonb,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS bookings (
+      id TEXT PRIMARY KEY,
+      owner_id TEXT NOT NULL,
+      meeting_id INTEGER REFERENCES meetings(id) ON DELETE SET NULL,
+      guest_name TEXT NOT NULL,
+      guest_email TEXT NOT NULL,
+      guest_timezone TEXT,
+      notes TEXT,
+      start_time TIMESTAMPTZ NOT NULL,
+      end_time TIMESTAMPTZ NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS scheduling_polls (
+      id TEXT PRIMARY KEY,
+      owner_id TEXT NOT NULL,
+      slug TEXT UNIQUE NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT,
+      timezone TEXT NOT NULL,
+      duration_minutes INTEGER NOT NULL DEFAULT 30,
+      options JSONB NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open',
+      final_start TIMESTAMPTZ,
+      meeting_id INTEGER REFERENCES meetings(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS poll_responses (
+      id TEXT PRIMARY KEY,
+      poll_id TEXT NOT NULL REFERENCES scheduling_polls(id) ON DELETE CASCADE,
+      participant_name TEXT NOT NULL,
+      participant_email TEXT,
+      participant_timezone TEXT,
+      selections JSONB NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS bookings_owner_time_idx ON bookings(owner_id, start_time, end_time);
+    CREATE INDEX IF NOT EXISTS poll_responses_poll_idx ON poll_responses(poll_id);
+  `);
+  return schedulingReady;
+}
+
+function slugify(value) {
+  return String(value || "meetmind-user").toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "meetmind-user";
+}
+
+function validTimezone(value) {
+  try { new Intl.DateTimeFormat("en-US", { timeZone: value }).format(); return true; } catch { return false; }
+}
+
+function publicProfile(row) {
+  return { slug: row.slug, displayName: row.display_name, timezone: row.timezone, durationMinutes: row.duration_minutes, bufferMinutes: row.buffer_minutes };
+}
+
+async function getProfileBySlug(slug) {
+  await ensureSchedulingTables();
+  const result = await pool.query("SELECT * FROM scheduling_profiles WHERE slug = $1", [slug]);
+  return result.rows[0] || null;
+}
+
+function slotCandidates(profile, from = new Date(), days = 30) {
+  const slots = [];
+  const duration = Number(profile.duration_minutes);
+  const availability = Array.isArray(profile.availability) ? profile.availability : defaultAvailability;
+  const ownerDate = formatInTimeZone(from, profile.timezone, "yyyy-MM-dd");
+  const baseDate = new Date(`${ownerDate}T12:00:00Z`);
+  for (let offset = 0; offset < days; offset++) {
+    const date = addDays(baseDate, offset);
+    const dateText = date.toISOString().slice(0, 10);
+    const day = date.getUTCDay();
+    const window = availability.find((item) => Number(item.day) === day && item.enabled);
+    if (!window) continue;
+    let cursor = fromZonedTime(`${dateText}T${window.start}:00`, profile.timezone);
+    const end = fromZonedTime(`${dateText}T${window.end}:00`, profile.timezone);
+    while (addMinutes(cursor, duration) <= end) {
+      if (cursor > addMinutes(new Date(), 30)) slots.push({ startTime: cursor.toISOString(), endTime: addMinutes(cursor, duration).toISOString() });
+      cursor = addMinutes(cursor, duration + Number(profile.buffer_minutes || 0));
+    }
+  }
+  return slots;
+}
+
+async function availableSlots(profile, from = new Date(), days = 30) {
+  const candidates = slotCandidates(profile, from, Math.min(days, 60));
+  if (!candidates.length) return [];
+  const end = candidates[candidates.length - 1].endTime;
+  const buffer = Number(profile.buffer_minutes || 0);
+  const busy = await pool.query("SELECT start_time, COALESCE(end_time, start_time + interval '30 minutes') AS end_time FROM meetings WHERE calendar_token = $1 AND start_time < ($2::timestamptz + ($4::int * interval '1 minute')) AND COALESCE(end_time, start_time + interval '30 minutes') > ($3::timestamptz - ($4::int * interval '1 minute'))", [profile.user_id, end, candidates[0].startTime, buffer]);
+  return candidates.filter((slot) => !busy.rows.some((item) => new Date(item.start_time) < addMinutes(new Date(slot.endTime), buffer) && addMinutes(new Date(item.end_time), buffer) > new Date(slot.startTime)));
+}
+
+function pollPayload(row, responses = []) {
+  const counts = Object.fromEntries((row.options || []).map((option) => [option, 0]));
+  responses.forEach((response) => (response.selections || []).forEach((option) => { if (option in counts) counts[option]++; }));
+  return { id: row.id, slug: row.slug, title: row.title, description: row.description, timezone: row.timezone, durationMinutes: row.duration_minutes, options: row.options, status: row.status, finalStart: row.final_start, counts, responseCount: responses.length };
+}
 
 const meetingSchema = {
   type: "object",
@@ -170,8 +292,125 @@ export default async function handler(request, response) {
 
   try {
     if (path === "/healthz") return response.status(200).json({ status: "ok" });
+
+    const publicBooking = path.match(/^\/booking\/([^/]+)$/);
+    const publicSlots = path.match(/^\/booking\/([^/]+)\/slots$/);
+    if (publicSlots && request.method === "GET") {
+      const profile = await getProfileBySlug(decodeURIComponent(publicSlots[1]));
+      if (!profile) return response.status(404).json({ error: "Booking page not found" });
+      const slots = await availableSlots(profile, new Date(), Number(request.query?.days || 30));
+      return response.status(200).json({ profile: publicProfile(profile), slots });
+    }
+    if (publicBooking && request.method === "GET") {
+      const profile = await getProfileBySlug(decodeURIComponent(publicBooking[1]));
+      if (!profile) return response.status(404).json({ error: "Booking page not found" });
+      return response.status(200).json(publicProfile(profile));
+    }
+    if (publicBooking && request.method === "POST") {
+      const profile = await getProfileBySlug(decodeURIComponent(publicBooking[1]));
+      if (!profile) return response.status(404).json({ error: "Booking page not found" });
+      const { startTime, guestName, guestEmail, guestTimezone, notes } = request.body || {};
+      if (!startTime || !guestName?.trim() || !guestEmail?.includes("@")) return response.status(400).json({ error: "Name, email, and a time are required" });
+      const allowed = await availableSlots(profile, new Date(), 60);
+      const selected = allowed.find((slot) => slot.startTime === new Date(startTime).toISOString());
+      if (!selected) return response.status(409).json({ error: "That time is no longer available" });
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [profile.user_id]);
+        const conflict = await client.query("SELECT 1 FROM meetings WHERE calendar_token = $1 AND start_time < ($2::timestamptz + ($4::int * interval '1 minute')) AND COALESCE(end_time, start_time + interval '30 minutes') > ($3::timestamptz - ($4::int * interval '1 minute')) LIMIT 1", [profile.user_id, selected.endTime, selected.startTime, Number(profile.buffer_minutes || 0)]);
+        if (conflict.rowCount) { await client.query("ROLLBACK"); return response.status(409).json({ error: "That time was just booked" }); }
+        const inserted = await client.query("INSERT INTO meetings (calendar_token,title,description,start_time,end_time,timezone,organizer,notes,color) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *", [profile.user_id, `Meeting with ${guestName.trim()}`, notes || `Booked by ${guestEmail}`, selected.startTime, selected.endTime, profile.timezone, guestName.trim(), `Guest: ${guestEmail}${guestTimezone ? ` • ${guestTimezone}` : ""}${notes ? `\n${notes}` : ""}`, "#10b981"]);
+        await client.query("INSERT INTO bookings (id,owner_id,meeting_id,guest_name,guest_email,guest_timezone,notes,start_time,end_time) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)", [randomUUID(), profile.user_id, inserted.rows[0].id, guestName.trim(), guestEmail.trim(), guestTimezone || null, notes || null, selected.startTime, selected.endTime]);
+        await client.query("COMMIT");
+        return response.status(201).json({ success: true, meeting: meeting(inserted.rows[0]), ownerTimezone: profile.timezone });
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally { client.release(); }
+    }
+
+    const publicPoll = path.match(/^\/polls\/([^/]+)$/);
+    const pollResponse = path.match(/^\/polls\/([^/]+)\/responses$/);
+    if (publicPoll && request.method === "GET") {
+      await ensureSchedulingTables();
+      const result = await pool.query("SELECT * FROM scheduling_polls WHERE slug = $1", [decodeURIComponent(publicPoll[1])]);
+      if (!result.rowCount) return response.status(404).json({ error: "Poll not found" });
+      const responses = await pool.query("SELECT selections FROM poll_responses WHERE poll_id = $1", [result.rows[0].id]);
+      return response.status(200).json(pollPayload(result.rows[0], responses.rows));
+    }
+    if (pollResponse && request.method === "POST") {
+      await ensureSchedulingTables();
+      const poll = await pool.query("SELECT * FROM scheduling_polls WHERE slug = $1", [decodeURIComponent(pollResponse[1])]);
+      if (!poll.rowCount || poll.rows[0].status !== "open") return response.status(404).json({ error: "This poll is not open" });
+      const { participantName, participantEmail, participantTimezone, selections } = request.body || {};
+      const valid = Array.isArray(selections) && selections.filter((option) => poll.rows[0].options.includes(option));
+      if (!participantName?.trim() || !valid?.length) return response.status(400).json({ error: "Your name and at least one available time are required" });
+      await pool.query("INSERT INTO poll_responses (id,poll_id,participant_name,participant_email,participant_timezone,selections) VALUES ($1,$2,$3,$4,$5,$6)", [randomUUID(), poll.rows[0].id, participantName.trim(), participantEmail || null, participantTimezone || null, JSON.stringify(valid)]);
+      return response.status(201).json({ success: true });
+    }
+
     const userId = await authenticatedUserId(request);
     if (!userId) return response.status(401).json({ error: "Sign in required" });
+
+    if (path === "/scheduling/profile" && request.method === "GET") {
+      await ensureSchedulingTables();
+      const existing = await pool.query("SELECT * FROM scheduling_profiles WHERE user_id = $1", [userId]);
+      if (!existing.rowCount) return response.status(200).json(null);
+      const row = existing.rows[0];
+      return response.status(200).json({ ...publicProfile(row), availability: row.availability });
+    }
+    if (path === "/scheduling/profile" && request.method === "PUT") {
+      await ensureSchedulingTables();
+      const body = request.body || {};
+      if (!body.displayName?.trim() || !validTimezone(body.timezone)) return response.status(400).json({ error: "A display name and valid timezone are required" });
+      const baseSlug = slugify(body.slug || body.displayName);
+      const current = await pool.query("SELECT slug FROM scheduling_profiles WHERE user_id = $1", [userId]);
+      let slug = current.rows[0]?.slug || baseSlug;
+      if (!current.rowCount || (body.slug && body.slug !== slug)) {
+        slug = baseSlug;
+        const taken = await pool.query("SELECT 1 FROM scheduling_profiles WHERE slug = $1 AND user_id <> $2", [slug, userId]);
+        if (taken.rowCount) slug = `${slug}-${Math.random().toString(36).slice(2, 7)}`;
+      }
+      const availability = Array.isArray(body.availability) ? body.availability : defaultAvailability;
+      const result = await pool.query(`INSERT INTO scheduling_profiles (user_id,slug,display_name,timezone,duration_minutes,buffer_minutes,availability) VALUES ($1,$2,$3,$4,$5,$6,$7)
+        ON CONFLICT (user_id) DO UPDATE SET slug=EXCLUDED.slug,display_name=EXCLUDED.display_name,timezone=EXCLUDED.timezone,duration_minutes=EXCLUDED.duration_minutes,buffer_minutes=EXCLUDED.buffer_minutes,availability=EXCLUDED.availability,updated_at=NOW() RETURNING *`, [userId, slug, body.displayName.trim(), body.timezone, Math.max(15, Math.min(180, Number(body.durationMinutes || 30))), Math.max(0, Math.min(60, Number(body.bufferMinutes || 0))), JSON.stringify(availability)]);
+      return response.status(200).json({ ...publicProfile(result.rows[0]), availability: result.rows[0].availability });
+    }
+    if (path === "/scheduling/polls" && request.method === "GET") {
+      await ensureSchedulingTables();
+      const polls = await pool.query("SELECT * FROM scheduling_polls WHERE owner_id = $1 ORDER BY created_at DESC", [userId]);
+      const output = [];
+      for (const row of polls.rows) {
+        const responses = await pool.query("SELECT selections FROM poll_responses WHERE poll_id = $1", [row.id]);
+        output.push(pollPayload(row, responses.rows));
+      }
+      return response.status(200).json(output);
+    }
+    if (path === "/scheduling/polls" && request.method === "POST") {
+      await ensureSchedulingTables();
+      const { title, description, timezone, durationMinutes, options } = request.body || {};
+      const normalized = Array.isArray(options) ? [...new Set(options.map((item) => new Date(item).toISOString()))].sort() : [];
+      if (!title?.trim() || !validTimezone(timezone) || normalized.length < 2) return response.status(400).json({ error: "Title, timezone, and at least two times are required" });
+      const id = randomUUID();
+      const slug = `${slugify(title)}-${Math.random().toString(36).slice(2, 8)}`;
+      const result = await pool.query("INSERT INTO scheduling_polls (id,owner_id,slug,title,description,timezone,duration_minutes,options) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *", [id, userId, slug, title.trim(), description || null, timezone, Number(durationMinutes || 30), JSON.stringify(normalized)]);
+      return response.status(201).json(pollPayload(result.rows[0]));
+    }
+    const finalizePoll = path.match(/^\/scheduling\/polls\/([^/]+)\/finalize$/);
+    if (finalizePoll && request.method === "POST") {
+      await ensureSchedulingTables();
+      const poll = await pool.query("SELECT * FROM scheduling_polls WHERE id = $1 AND owner_id = $2", [finalizePoll[1], userId]);
+      if (!poll.rowCount || poll.rows[0].status !== "open") return response.status(404).json({ error: "Open poll not found" });
+      const startTime = new Date(request.body?.startTime).toISOString();
+      if (!poll.rows[0].options.includes(startTime)) return response.status(400).json({ error: "Choose a proposed time" });
+      const endTime = addMinutes(new Date(startTime), poll.rows[0].duration_minutes).toISOString();
+      const conflict = await pool.query("SELECT 1 FROM meetings WHERE calendar_token=$1 AND start_time < $2 AND COALESCE(end_time,start_time + interval '30 minutes') > $3 LIMIT 1", [userId, endTime, startTime]);
+      if (conflict.rowCount) return response.status(409).json({ error: "That time now conflicts with your calendar" });
+      const inserted = await pool.query("INSERT INTO meetings (calendar_token,title,description,start_time,end_time,timezone,notes,color) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *", [userId, poll.rows[0].title, poll.rows[0].description, startTime, endTime, poll.rows[0].timezone, "Confirmed from a MeetMind group poll", "#8b5cf6"]);
+      await pool.query("UPDATE scheduling_polls SET status='finalized',final_start=$1,meeting_id=$2 WHERE id=$3", [startTime, inserted.rows[0].id, poll.rows[0].id]);
+      return response.status(200).json({ success: true, meeting: meeting(inserted.rows[0]) });
+    }
 
     if (path === "/ai/extract-meeting" && request.method === "POST") {
       return await extractMeeting(request, response);

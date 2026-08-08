@@ -1,3 +1,3 @@
 export * from "./generated/api";
 export * from "./generated/api.schemas";
-export { setGlobalHeader, clearGlobalHeader, setAuthTokenProvider } from "./custom-fetch";
+export { customFetch, setGlobalHeader, clearGlobalHeader, setAuthTokenProvider } from "./custom-fetch";

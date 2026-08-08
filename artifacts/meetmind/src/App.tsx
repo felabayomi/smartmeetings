@@ -12,6 +12,9 @@ import MeetingsList from "./pages/meetings-list";
 import NotFound from "./pages/not-found";
 import Landing from "./pages/landing";
 import AuthPage from "./pages/auth";
+import Scheduling from "./pages/scheduling";
+import PublicBooking from "./pages/public-booking";
+import PublicPoll from "./pages/public-poll";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -47,6 +50,7 @@ function ProtectedApp() {
     <Switch>
       <Route path="/app" component={Dashboard} />
       <Route path="/app/list" component={MeetingsList} />
+      <Route path="/app/scheduling" component={Scheduling} />
       <Route component={NotFound} />
     </Switch>
   );
@@ -86,6 +90,8 @@ function Router() {
       <Route path="/sign-up">
         {isLoaded && isSignedIn ? <Redirect to="/app" /> : <AuthPage><SignUp routing="path" path="/sign-up" signInUrl="/sign-in" /></AuthPage>}
       </Route>
+      <Route path="/book/:slug" component={PublicBooking} />
+      <Route path="/poll/:slug" component={PublicPoll} />
       <Route path="/app/:rest*" component={ProtectedApp} />
       <Route path="/app" component={ProtectedApp} />
       <Route component={NotFound} />

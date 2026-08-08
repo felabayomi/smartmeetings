@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link, useLocation } from 'wouter';
-import { Calendar as CalendarIcon, List, Menu, X } from 'lucide-react';
+import { Calendar as CalendarIcon, CalendarClock, List, Menu, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -27,6 +27,7 @@ export function Layout({ children }: LayoutProps) {
   const navItems = [
     { path: '/app', label: 'Calendar', icon: CalendarIcon },
     { path: '/app/list', label: 'All Meetings', icon: List },
+    { path: '/app/scheduling', label: 'Scheduling', icon: CalendarClock },
   ];
 
   return (
