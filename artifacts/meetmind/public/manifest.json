@@ -1,12 +1,19 @@
 {
-  "name": "Smart Meetings",
-  "short_name": "Smart Meetings",
-  "description": "Smart AI-powered meeting calendar and reminder app.",
-  "start_url": "/admin/ark/felixdgreat",
+  "id": "/app",
+  "name": "MeetMind — Smart Meeting Scheduling",
+  "short_name": "MeetMind",
+  "description": "AI meeting capture, private calendars, instant booking pages, group scheduling polls, and reminders.",
+  "start_url": "/app",
   "scope": "/",
   "display": "standalone",
-  "background_color": "#4f46e5",
+  "orientation": "any",
+  "background_color": "#f8f9ff",
   "theme_color": "#4f46e5",
+  "categories": ["productivity", "business", "utilities"],
+  "shortcuts": [
+    { "name": "My calendar", "short_name": "Calendar", "url": "/app", "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Scheduling", "short_name": "Scheduling", "url": "/app/scheduling", "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }] }
+  ],
   "icons": [
     {
       "src": "/icon-192.png",

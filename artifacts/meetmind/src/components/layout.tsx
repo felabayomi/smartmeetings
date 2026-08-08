@@ -5,6 +5,8 @@ import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { motion, AnimatePresence } from 'framer-motion';
 import { UserButton } from '@clerk/react';
+import { SiteFooter } from '@/components/site-footer';
+import { InstallAppButton } from '@/components/install-app-button';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -85,6 +87,7 @@ export function Layout({ children }: LayoutProps) {
                   );
                 })}
               </nav>
+              <InstallAppButton className="w-full rounded-xl" />
             </motion.div>
           </>
         )}
@@ -126,6 +129,7 @@ export function Layout({ children }: LayoutProps) {
           <div className="flex items-center gap-3 mb-4 px-1">
             <UserButton showName />
           </div>
+          <InstallAppButton className="w-full rounded-xl mb-3" />
           <div className="glass-card rounded-xl p-4 text-sm text-muted-foreground">
             <p className="font-medium text-foreground mb-1">AI Assistant Ready</p>
             <p className="text-xs">Upload screenshots to auto-create meetings instantly.</p>
@@ -152,6 +156,7 @@ export function Layout({ children }: LayoutProps) {
             </motion.div>
           </AnimatePresence>
         </div>
+        <SiteFooter />
       </main>
     </div>
   );

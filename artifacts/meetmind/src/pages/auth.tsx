@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { Link } from "wouter";
 import { ShieldCheck, Sparkles } from "lucide-react";
+import { SiteFooter } from "@/components/site-footer";
 
 export default function AuthPage({ children }: { children: ReactNode }) {
   return (
@@ -20,6 +21,7 @@ export default function AuthPage({ children }: { children: ReactNode }) {
         <div className="flex-1 grid place-items-center px-5 pb-16">
           {children}
         </div>
+        <SiteFooter />
       </section>
     </div>
   );
