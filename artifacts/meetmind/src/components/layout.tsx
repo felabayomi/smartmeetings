@@ -4,6 +4,7 @@ import { Calendar as CalendarIcon, List, Menu, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { motion, AnimatePresence } from 'framer-motion';
+import { UserButton } from '@clerk/react';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -24,8 +25,8 @@ export function Layout({ children }: LayoutProps) {
   const [mobileMenuOpen, setMobileMenuOpen] = React.useState(false);
 
   const navItems = [
-    { path: '/', label: 'Calendar', icon: CalendarIcon },
-    { path: '/list', label: 'All Meetings', icon: List },
+    { path: '/app', label: 'Calendar', icon: CalendarIcon },
+    { path: '/app/list', label: 'All Meetings', icon: List },
   ];
 
   return (
@@ -33,9 +34,12 @@ export function Layout({ children }: LayoutProps) {
       {/* Mobile Header */}
       <div className="md:hidden glass-panel sticky top-0 z-50 flex items-center justify-between p-4">
         <Logo className="w-14 h-14" />
-        <Button variant="ghost" size="icon" onClick={() => setMobileMenuOpen(true)}>
-          <Menu className="w-6 h-6" />
-        </Button>
+        <div className="flex items-center gap-2">
+          <UserButton />
+          <Button variant="ghost" size="icon" onClick={() => setMobileMenuOpen(true)}>
+            <Menu className="w-6 h-6" />
+          </Button>
+        </div>
       </div>
 
       {/* Mobile Sidebar Overlay */}
@@ -118,6 +122,9 @@ export function Layout({ children }: LayoutProps) {
         </nav>
 
         <div className="mt-auto pt-6 border-t border-border/50">
+          <div className="flex items-center gap-3 mb-4 px-1">
+            <UserButton showName />
+          </div>
           <div className="glass-card rounded-xl p-4 text-sm text-muted-foreground">
             <p className="font-medium text-foreground mb-1">AI Assistant Ready</p>
             <p className="text-xs">Upload screenshots to auto-create meetings instantly.</p>

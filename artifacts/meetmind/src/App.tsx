@@ -1,15 +1,17 @@
-import { useEffect } from "react";
-import { Switch, Route, Router as WouterRouter } from "wouter";
+import { useEffect, useState, type ReactNode } from "react";
+import { Redirect, Route, Switch } from "wouter";
+import { SignIn, SignUp, useAuth } from "@clerk/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { setGlobalHeader } from "@workspace/api-client-react";
-import { getCalendarToken, getRouterBase, persistToken } from "@/lib/calendar-token";
+import { setAuthTokenProvider } from "@workspace/api-client-react";
 
 // Pages
 import Dashboard from "./pages/dashboard";
 import MeetingsList from "./pages/meetings-list";
 import NotFound from "./pages/not-found";
+import Landing from "./pages/landing";
+import AuthPage from "./pages/auth";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -19,13 +21,6 @@ const queryClient = new QueryClient({
     },
   },
 });
-
-// Resolve the calendar token once (may trigger a redirect for root visitors)
-const CALENDAR_TOKEN = getCalendarToken();
-// Persist so future visits to / return to the same calendar
-persistToken(CALENDAR_TOKEN);
-// Inject into every API request globally
-setGlobalHeader("x-calendar-token", CALENDAR_TOKEN);
 
 function ServiceWorkerRegistrar() {
   useEffect(() => {
@@ -39,26 +34,74 @@ function ServiceWorkerRegistrar() {
   return null;
 }
 
-function Router() {
+function ProtectedApp() {
+  const { isLoaded, isSignedIn } = useAuth();
+
+  if (!isLoaded) {
+    return <div className="min-h-screen grid place-items-center text-muted-foreground">Loading MeetMind…</div>;
+  }
+
+  if (!isSignedIn) return <Redirect to="/sign-in" />;
+
   return (
     <Switch>
-      <Route path="/" component={Dashboard} />
-      <Route path="/list" component={MeetingsList} />
+      <Route path="/app" component={Dashboard} />
+      <Route path="/app/list" component={MeetingsList} />
+      <Route component={NotFound} />
+    </Switch>
+  );
+}
+
+function AuthenticatedRequests({ children }: { children: ReactNode }) {
+  const { getToken } = useAuth();
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    setAuthTokenProvider(() => getToken());
+    setReady(true);
+    return () => {
+      setAuthTokenProvider(null);
+      setReady(false);
+    };
+  }, [getToken]);
+
+  return ready ? children : null;
+}
+
+function Router() {
+  const { isLoaded, isSignedIn } = useAuth();
+
+  return (
+    <Switch>
+      <Route path="/" component={Landing} />
+      <Route path="/sign-in/:rest*">
+        {isLoaded && isSignedIn ? <Redirect to="/app" /> : <AuthPage><SignIn routing="path" path="/sign-in" signUpUrl="/sign-up" /></AuthPage>}
+      </Route>
+      <Route path="/sign-in">
+        {isLoaded && isSignedIn ? <Redirect to="/app" /> : <AuthPage><SignIn routing="path" path="/sign-in" signUpUrl="/sign-up" /></AuthPage>}
+      </Route>
+      <Route path="/sign-up/:rest*">
+        {isLoaded && isSignedIn ? <Redirect to="/app" /> : <AuthPage><SignUp routing="path" path="/sign-up" signInUrl="/sign-in" /></AuthPage>}
+      </Route>
+      <Route path="/sign-up">
+        {isLoaded && isSignedIn ? <Redirect to="/app" /> : <AuthPage><SignUp routing="path" path="/sign-up" signInUrl="/sign-in" /></AuthPage>}
+      </Route>
+      <Route path="/app/:rest*" component={ProtectedApp} />
+      <Route path="/app" component={ProtectedApp} />
       <Route component={NotFound} />
     </Switch>
   );
 }
 
 function App() {
-  const base = getRouterBase(CALENDAR_TOKEN);
 
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <ServiceWorkerRegistrar />
-        <WouterRouter base={base}>
+        <AuthenticatedRequests>
           <Router />
-        </WouterRouter>
+        </AuthenticatedRequests>
         <Toaster />
       </TooltipProvider>
     </QueryClientProvider>

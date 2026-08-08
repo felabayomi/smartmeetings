@@ -1,8 +1,12 @@
 // @ts-nocheck
 import pg from "pg";
+import { createClerkClient } from "@clerk/backend";
 
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
-const defaultToken = "admin/ark/felixdgreat";
+const clerk = createClerkClient({
+  secretKey: process.env.CLERK_SECRET_KEY,
+  publishableKey: process.env.CLERK_PUBLISHABLE_KEY || process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY || process.env.VITE_CLERK_PUBLISHABLE_KEY,
+});
 const allowedImageTypes = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
 
 const meetingSchema = {
@@ -29,7 +33,6 @@ const meetingSchema = {
 function meeting(row: Record<string, unknown>) {
   return {
     id: row.id,
-    calendarToken: row.calendar_token,
     title: row.title,
     description: row.description,
     startTime: row.start_time,
@@ -46,6 +49,58 @@ function meeting(row: Record<string, unknown>) {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+function webRequest(request) {
+  const protocol = request.headers["x-forwarded-proto"] || "https";
+  const host = request.headers["x-forwarded-host"] || request.headers.host;
+  const headers = new Headers();
+  for (const [key, value] of Object.entries(request.headers)) {
+    if (Array.isArray(value)) value.forEach((item) => headers.append(key, item));
+    else if (value != null) headers.set(key, String(value));
+  }
+  return new Request(`${protocol}://${host}${request.url}`, { method: request.method, headers });
+}
+
+async function authenticatedUserId(request) {
+  if (!process.env.CLERK_SECRET_KEY) throw new Error("Clerk is not configured");
+  const parties = [
+    "https://smart-meeting-minder.vercel.app",
+    process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null,
+    "http://localhost:5173",
+  ].filter(Boolean);
+  const state = await clerk.authenticateRequest(webRequest(request), {
+    authorizedParties: parties,
+    acceptsToken: "session_token",
+  });
+  if (!state.isAuthenticated) return null;
+  return state.toAuth().userId || null;
+}
+
+const editableFields = {
+  title: "title",
+  description: "description",
+  startTime: "start_time",
+  endTime: "end_time",
+  timezone: "timezone",
+  location: "location",
+  organizer: "organizer",
+  meetingUrl: "meeting_url",
+  notes: "notes",
+  reminderMinutes: "reminder_minutes",
+  reminderMinutes2: "reminder_minutes_2",
+  reminderMinutes3: "reminder_minutes_3",
+  color: "color",
+};
+
+function meetingValues(body, partial = false) {
+  const result = {};
+  for (const key of Object.keys(editableFields)) {
+    if (Object.prototype.hasOwnProperty.call(body || {}, key)) result[key] = body[key];
+  }
+  if (!partial && (typeof result.title !== "string" || !result.title.trim())) throw new Error("Title is required");
+  if (!partial && !result.startTime) throw new Error("Start time is required");
+  return result;
 }
 
 async function extractMeeting(request, response) {
@@ -112,24 +167,73 @@ async function extractMeeting(request, response) {
 
 export default async function handler(request, response) {
   const path = request.url.split("?")[0].replace(/^\/api/, "");
-  const token = String(request.headers["x-calendar-token"] || defaultToken);
 
   try {
     if (path === "/healthz") return response.status(200).json({ status: "ok" });
+    const userId = await authenticatedUserId(request);
+    if (!userId) return response.status(401).json({ error: "Sign in required" });
+
     if (path === "/ai/extract-meeting" && request.method === "POST") {
       return await extractMeeting(request, response);
     }
-    if (path !== "/meetings" || request.method !== "GET") {
-      return response.status(404).json({ error: "Not found" });
+
+    if (path === "/meetings" && request.method === "GET") {
+      const result = await pool.query(
+        "SELECT * FROM meetings WHERE calendar_token = $1 ORDER BY start_time",
+        [userId],
+      );
+      return response.status(200).json(result.rows.map(meeting));
     }
 
-    const result = await pool.query(
-      "SELECT * FROM meetings WHERE calendar_token = $1 ORDER BY start_time",
-      [token],
-    );
-    return response.status(200).json(result.rows.map(meeting));
+    if (path === "/meetings" && request.method === "POST") {
+      const values = meetingValues(request.body);
+      const keys = Object.keys(values);
+      const columns = ["calendar_token", ...keys.map((key) => editableFields[key])];
+      const params = [userId, ...keys.map((key) => values[key])];
+      const placeholders = params.map((_, index) => `$${index + 1}`);
+      const result = await pool.query(
+        `INSERT INTO meetings (${columns.join(", ")}) VALUES (${placeholders.join(", ")}) RETURNING *`,
+        params,
+      );
+      return response.status(201).json(meeting(result.rows[0]));
+    }
+
+    const match = path.match(/^\/meetings\/(\d+)$/);
+    if (match) {
+      const id = Number(match[1]);
+      if (request.method === "GET") {
+        const result = await pool.query("SELECT * FROM meetings WHERE id = $1 AND calendar_token = $2", [id, userId]);
+        if (!result.rowCount) return response.status(404).json({ error: "Meeting not found" });
+        return response.status(200).json(meeting(result.rows[0]));
+      }
+      if (request.method === "PUT" || request.method === "PATCH") {
+        const values = meetingValues(request.body, true);
+        const keys = Object.keys(values);
+        if (!keys.length) return response.status(400).json({ error: "No meeting fields supplied" });
+        const assignments = keys.map((key, index) => `${editableFields[key]} = $${index + 1}`);
+        const params = keys.map((key) => values[key]);
+        params.push(id, userId);
+        const result = await pool.query(
+          `UPDATE meetings SET ${assignments.join(", ")}, updated_at = NOW() WHERE id = $${keys.length + 1} AND calendar_token = $${keys.length + 2} RETURNING *`,
+          params,
+        );
+        if (!result.rowCount) return response.status(404).json({ error: "Meeting not found" });
+        return response.status(200).json(meeting(result.rows[0]));
+      }
+      if (request.method === "DELETE") {
+        const result = await pool.query("DELETE FROM meetings WHERE id = $1 AND calendar_token = $2", [id, userId]);
+        if (!result.rowCount) return response.status(404).json({ error: "Meeting not found" });
+        return response.status(200).json({ success: true });
+      }
+    }
+
+    return response.status(404).json({ error: "Not found" });
   } catch (error) {
     console.error("Meeting API error", error);
-    return response.status(500).json({ error: "Failed to fetch meetings" });
+    const message = error instanceof Error ? error.message : "Request failed";
+    if (message === "Title is required" || message === "Start time is required") {
+      return response.status(400).json({ error: message });
+    }
+    return response.status(500).json({ error: "Meeting request failed" });
   }
 }

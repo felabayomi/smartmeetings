@@ -75,6 +75,7 @@
     "zod": "catalog:"
   },
   "dependencies": {
+    "@clerk/react": "^6.13.1",
     "canvas-confetti": "^1.9.4",
     "date-fns-tz": "^3.2.0"
   }

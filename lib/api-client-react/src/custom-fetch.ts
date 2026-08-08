@@ -4,6 +4,7 @@ export type CustomFetchOptions = RequestInit & {
 
 // Module-level global headers injected into every request (e.g. X-Calendar-Token)
 const _globalHeaders = new Map<string, string>();
+let _authTokenProvider: (() => Promise<string | null>) | null = null;
 
 export function setGlobalHeader(key: string, value: string) {
   _globalHeaders.set(key.toLowerCase(), value);
@@ -11,6 +12,10 @@ export function setGlobalHeader(key: string, value: string) {
 
 export function clearGlobalHeader(key: string) {
   _globalHeaders.delete(key.toLowerCase());
+}
+
+export function setAuthTokenProvider(provider: (() => Promise<string | null>) | null) {
+  _authTokenProvider = provider;
 }
 
 export type ErrorType<T = unknown> = ApiError<T>;
@@ -296,6 +301,11 @@ export async function customFetch<T = unknown>(
 
   const globalHeadersInit = Object.fromEntries(_globalHeaders);
   const headers = mergeHeaders(isRequest(input) ? input.headers : undefined, globalHeadersInit, headersInit);
+
+  if (_authTokenProvider && !headers.has("authorization")) {
+    const token = await _authTokenProvider();
+    if (token) headers.set("authorization", `Bearer ${token}`);
+  }
 
   if (
     typeof init.body === "string" &&
