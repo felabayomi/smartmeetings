@@ -50,6 +50,11 @@ function ensureSchedulingTables() {
       end_time TIMESTAMPTZ NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+    CREATE TABLE IF NOT EXISTS scheduling_profile_aliases (
+      alias TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES scheduling_profiles(user_id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
     CREATE TABLE IF NOT EXISTS scheduling_polls (
       id TEXT PRIMARY KEY,
       owner_id TEXT NOT NULL,
@@ -96,7 +101,10 @@ function publicProfile(row) {
 
 async function getProfileBySlug(slug) {
   await ensureSchedulingTables();
-  const result = await pool.query("SELECT * FROM scheduling_profiles WHERE slug = $1", [slug]);
+  const result = await pool.query(`SELECT * FROM scheduling_profiles WHERE slug = $1
+    UNION ALL
+    SELECT profile.* FROM scheduling_profile_aliases alias JOIN scheduling_profiles profile ON profile.user_id = alias.user_id WHERE alias.alias = $1
+    LIMIT 1`, [slug]);
   return result.rows[0] || null;
 }
 
@@ -111,13 +119,15 @@ function slotCandidates(profile, from = new Date(), days = 30) {
     const dateText = date.toISOString().slice(0, 10);
     const day = date.getUTCDay();
     const window = profile.always_available
-      ? { enabled: true, start: "00:00", end: "24:00" }
+      ? { enabled: true, allDay: true, start: "00:00", end: "24:00" }
       : availability.find((item) => Number(item.day) === day && item.enabled);
     if (!window) continue;
-    let cursor = fromZonedTime(`${dateText}T${window.start}:00`, profile.timezone);
-    const end = window.end === "24:00"
+    const startText = window.allDay ? "00:00" : window.start;
+    const endText = window.allDay ? "24:00" : window.end;
+    let cursor = fromZonedTime(`${dateText}T${startText}:00`, profile.timezone);
+    const end = endText === "24:00"
       ? fromZonedTime(`${addDays(date, 1).toISOString().slice(0, 10)}T00:00:00`, profile.timezone)
-      : fromZonedTime(`${dateText}T${window.end}:00`, profile.timezone);
+      : fromZonedTime(`${dateText}T${endText}:00`, profile.timezone);
     while (addMinutes(cursor, duration) <= end) {
       if (cursor > addMinutes(new Date(), 30)) slots.push({ startTime: cursor.toISOString(), endTime: addMinutes(cursor, duration).toISOString() });
       cursor = addMinutes(cursor, duration + Number(profile.buffer_minutes || 0));
@@ -448,7 +458,10 @@ export default async function handler(request, response) {
       const existing = await pool.query("SELECT * FROM scheduling_profiles WHERE user_id = $1", [userId]);
       if (!existing.rowCount) return response.status(200).json(null);
       const row = existing.rows[0];
-      return response.status(200).json({ ...publicProfile(row), availability: row.availability, alwaysAvailable: row.always_available, maxBookingsPerDay: row.max_bookings_per_day, blackouts: row.blackouts });
+      const availability = row.always_available
+        ? defaultAvailability.map((item) => ({ ...item, enabled: true, allDay: true, start: "00:00", end: "24:00" }))
+        : (row.availability || []).map((item) => ({ ...item, allDay: Boolean(item.allDay) }));
+      return response.status(200).json({ ...publicProfile(row), availability, maxBookingsPerDay: row.max_bookings_per_day, blackouts: row.blackouts });
     }
     if (path === "/scheduling/profile" && request.method === "PUT") {
       await ensureSchedulingTables();
@@ -459,16 +472,27 @@ export default async function handler(request, response) {
       let slug = current.rows[0]?.slug || baseSlug;
       if (!current.rowCount || (body.slug && body.slug !== slug)) {
         slug = baseSlug;
-        const taken = await pool.query("SELECT 1 FROM scheduling_profiles WHERE slug = $1 AND user_id <> $2", [slug, userId]);
+        const taken = await pool.query(`SELECT 1 FROM scheduling_profiles WHERE slug = $1 AND user_id <> $2
+          UNION ALL SELECT 1 FROM scheduling_profile_aliases WHERE alias = $1 AND user_id <> $2 LIMIT 1`, [slug, userId]);
         if (taken.rowCount) slug = `${slug}-${Math.random().toString(36).slice(2, 7)}`;
       }
-      const availability = Array.isArray(body.availability) ? body.availability : defaultAvailability;
+      const availability = Array.isArray(body.availability) ? body.availability.map((item) => ({
+        day: Number(item.day),
+        enabled: Boolean(item.enabled),
+        allDay: Boolean(item.allDay),
+        start: item.allDay ? "00:00" : item.start,
+        end: item.allDay ? "24:00" : item.end,
+      })) : defaultAvailability;
       const maxBookingsPerDay = [1, 2, 3, 4, 5].includes(Number(body.maxBookingsPerDay)) ? Number(body.maxBookingsPerDay) : null;
       const blackouts = normalizeBlackouts(body.blackouts);
+      if (current.rowCount && current.rows[0].slug !== slug) {
+        await pool.query("DELETE FROM scheduling_profile_aliases WHERE alias = $1 AND user_id = $2", [slug, userId]);
+        await pool.query("INSERT INTO scheduling_profile_aliases (alias,user_id) VALUES ($1,$2) ON CONFLICT (alias) DO NOTHING", [current.rows[0].slug, userId]);
+      }
       const result = await pool.query(`INSERT INTO scheduling_profiles (user_id,slug,display_name,timezone,duration_minutes,buffer_minutes,availability,always_available,max_bookings_per_day,blackouts) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-        ON CONFLICT (user_id) DO UPDATE SET slug=EXCLUDED.slug,display_name=EXCLUDED.display_name,timezone=EXCLUDED.timezone,duration_minutes=EXCLUDED.duration_minutes,buffer_minutes=EXCLUDED.buffer_minutes,availability=EXCLUDED.availability,always_available=EXCLUDED.always_available,max_bookings_per_day=EXCLUDED.max_bookings_per_day,blackouts=EXCLUDED.blackouts,updated_at=NOW() RETURNING *`, [userId, slug, body.displayName.trim(), body.timezone, Math.max(15, Math.min(180, Number(body.durationMinutes || 30))), Math.max(0, Math.min(60, Number(body.bufferMinutes || 0))), JSON.stringify(availability), Boolean(body.alwaysAvailable), maxBookingsPerDay, JSON.stringify(blackouts)]);
+        ON CONFLICT (user_id) DO UPDATE SET slug=EXCLUDED.slug,display_name=EXCLUDED.display_name,timezone=EXCLUDED.timezone,duration_minutes=EXCLUDED.duration_minutes,buffer_minutes=EXCLUDED.buffer_minutes,availability=EXCLUDED.availability,always_available=EXCLUDED.always_available,max_bookings_per_day=EXCLUDED.max_bookings_per_day,blackouts=EXCLUDED.blackouts,updated_at=NOW() RETURNING *`, [userId, slug, body.displayName.trim(), body.timezone, Math.max(15, Math.min(180, Number(body.durationMinutes || 30))), Math.max(0, Math.min(60, Number(body.bufferMinutes || 0))), JSON.stringify(availability), false, maxBookingsPerDay, JSON.stringify(blackouts)]);
       const row = result.rows[0];
-      return response.status(200).json({ ...publicProfile(row), availability: row.availability, alwaysAvailable: row.always_available, maxBookingsPerDay: row.max_bookings_per_day, blackouts: row.blackouts });
+      return response.status(200).json({ ...publicProfile(row), availability: row.availability, maxBookingsPerDay: row.max_bookings_per_day, blackouts: row.blackouts });
     }
     if (path === "/scheduling/polls" && request.method === "GET") {
       await ensureSchedulingTables();

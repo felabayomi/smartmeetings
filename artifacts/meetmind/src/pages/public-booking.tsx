@@ -24,7 +24,7 @@ export default function PublicBooking() {
   const [error,setError] = useState("");
   const [name,setName] = useState(""); const [email,setEmail] = useState(""); const [notes,setNotes] = useState("");
 
-  useEffect(()=>{ fetch(`/api/booking/${encodeURIComponent(slug)}/slots`).then(async response=>{const data=await response.json();if(!response.ok)throw new Error(data.error);setProfile(data.profile);setSlots(data.slots)}).catch(error=>setError(error.message)).finally(()=>setLoading(false)); },[slug]);
+  useEffect(()=>{ fetch(`/api/booking/${encodeURIComponent(slug)}/slots`).then(async response=>{const data=await response.json();if(!response.ok)throw new Error(data.error);if(data.profile?.slug&&data.profile.slug!==slug){window.location.replace(`/book/${encodeURIComponent(data.profile.slug)}`);return}setProfile(data.profile);setSlots(data.slots)}).catch(error=>setError(error.message)).finally(()=>setLoading(false)); },[slug]);
   const grouped = slots.reduce<Record<string,Slot[]>>((acc,slot)=>{const key=format(slot.startTime,visitorZone,{weekday:"long",month:"short",day:"numeric",timeZone:visitorZone});(acc[key]??=[]).push(slot);return acc},{});
 
   async function book() { if(!selected)return;setSubmitting(true);setError("");try{const response=await fetch(`/api/booking/${encodeURIComponent(slug)}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({startTime:selected.startTime,guestName:name,guestEmail:email,guestTimezone:visitorZone,notes})});const data=await response.json();if(!response.ok)throw new Error(data.error);setDone(true)}catch(error){setError(error instanceof Error?error.message:"Could not book") }finally{setSubmitting(false)} }

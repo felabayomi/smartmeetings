@@ -9,12 +9,12 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 
-type Window = { day: number; enabled: boolean; start: string; end: string };
+type Window = { day: number; enabled: boolean; allDay?: boolean; start: string; end: string };
 type Blackout = { id: string; date: string; allDay: boolean; start: string; end: string };
-type Profile = { slug: string; displayName: string; timezone: string; durationMinutes: number; bufferMinutes: number; availability: Window[]; alwaysAvailable: boolean; maxBookingsPerDay: number | null; blackouts: Blackout[] };
+type Profile = { slug: string; displayName: string; timezone: string; durationMinutes: number; bufferMinutes: number; availability: Window[]; maxBookingsPerDay: number | null; blackouts: Blackout[] };
 type Poll = { id: string; slug: string; title: string; timezone: string; options: string[]; status: string; counts: Record<string, number>; responseCount: number; finalStart?: string };
 const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-const defaults: Window[] = [1,2,3,4,5,6,0].map(day => ({ day, enabled: day > 0 && day < 6, start: "09:00", end: "17:00" }));
+const defaults: Window[] = [1,2,3,4,5,6,0].map(day => ({ day, enabled: day > 0 && day < 6, allDay:false, start: "09:00", end: "17:00" }));
 
 function browserTimezone() { return Intl.DateTimeFormat().resolvedOptions().timeZone || "America/New_York"; }
 function displayDate(iso: string, timezone: string) { return new Intl.DateTimeFormat(undefined, { dateStyle:"medium", timeStyle:"short", timeZone: timezone }).format(new Date(iso)); }
@@ -27,28 +27,28 @@ export default function Scheduling() {
   const pollsQuery = useQuery({ queryKey:["scheduling-polls"], queryFn:() => customFetch<Poll[]>("/api/scheduling/polls", { responseType:"json" }) });
   const existing = profileQuery.data;
   const [displayName, setDisplayName] = useState("");
+  const [bookingSlug, setBookingSlug] = useState("");
   const [timezone, setTimezone] = useState(browserTimezone());
   const [duration, setDuration] = useState(30);
   const [buffer, setBuffer] = useState(0);
   const [availability, setAvailability] = useState<Window[]>(defaults);
-  const [alwaysAvailable, setAlwaysAvailable] = useState(false);
   const [maxBookingsPerDay, setMaxBookingsPerDay] = useState<number | null>(null);
   const [blackouts, setBlackouts] = useState<Blackout[]>([]);
   const [blackoutDate, setBlackoutDate] = useState(localDate());
-  const [blackoutAllDay, setBlackoutAllDay] = useState(true);
+  const [blackoutAllDay, setBlackoutAllDay] = useState(false);
   const [blackoutStart, setBlackoutStart] = useState("09:00");
   const [blackoutEnd, setBlackoutEnd] = useState("17:00");
   const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
     if (existing && !hydrated) {
-      setDisplayName(existing.displayName); setTimezone(existing.timezone); setDuration(existing.durationMinutes); setBuffer(existing.bufferMinutes); setAvailability(existing.availability); setAlwaysAvailable(Boolean(existing.alwaysAvailable)); setMaxBookingsPerDay(existing.maxBookingsPerDay ?? null); setBlackouts(existing.blackouts || []); setHydrated(true);
+      setDisplayName(existing.displayName); setBookingSlug(existing.slug); setTimezone(existing.timezone); setDuration(existing.durationMinutes); setBuffer(existing.bufferMinutes); setAvailability(existing.availability.map(item=>({...item,allDay:Boolean(item.allDay)}))); setMaxBookingsPerDay(existing.maxBookingsPerDay ?? null); setBlackouts(existing.blackouts || []); setHydrated(true);
     }
   }, [existing, hydrated]);
 
   const saveProfile = useMutation({
-    mutationFn:() => customFetch<Profile>("/api/scheduling/profile", { method:"PUT", responseType:"json", body:JSON.stringify({ displayName, timezone, durationMinutes:duration, bufferMinutes:buffer, availability, alwaysAvailable, maxBookingsPerDay, blackouts }) }),
-    onSuccess:(data) => { queryClient.setQueryData(["scheduling-profile"], data); toast({title:"Booking page saved",description:"Your public availability is live."}); },
+    mutationFn:() => customFetch<Profile>("/api/scheduling/profile", { method:"PUT", responseType:"json", body:JSON.stringify({ displayName, slug:bookingSlug, timezone, durationMinutes:duration, bufferMinutes:buffer, availability, maxBookingsPerDay, blackouts }) }),
+    onSuccess:(data) => { setBookingSlug(data.slug); queryClient.setQueryData(["scheduling-profile"], data); toast({title:"Booking page saved",description:"Your public availability is live. Previous booking links will continue to work."}); },
     onError:(error:Error) => toast({variant:"destructive",title:"Could not save",description:error.message}),
   });
 
@@ -83,15 +83,15 @@ export default function Scheduling() {
       {profileQuery.isLoading ? <div className="h-20 rounded-2xl bg-muted/40 animate-pulse" /> : bookingUrl ? <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 sm:p-5"><p className="text-sm font-bold text-emerald-800">Your public booking link is live</p><div className="mt-3 flex flex-col sm:flex-row gap-2"><Input readOnly value={bookingUrl} className="bg-white font-medium"/><Button variant="outline" className="bg-white" onClick={() => {navigator.clipboard.writeText(bookingUrl);toast({title:"Booking link copied"})}}><Clipboard className="w-4 h-4 mr-2"/>Copy link</Button><a href={bookingUrl} target="_blank" rel="noreferrer"><Button variant="outline" className="w-full bg-white"><ExternalLink className="w-4 h-4 mr-2"/>Preview</Button></a></div></div> : <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4"><div><p className="font-bold text-amber-900">Publish once to create your share link</p><p className="text-sm text-amber-800 mt-1">Set your hours below, then use the button to make your booking page live.</p></div><Button onClick={()=>saveProfile.mutate()} disabled={saveProfile.isPending||!displayName} className="rounded-xl flex-shrink-0">Save and get link</Button></div>}
       <div className="grid md:grid-cols-2 gap-5">
         <label className="space-y-2"><span className="text-sm font-semibold">Name shown to bookers</span><Input value={displayName} onChange={e=>setDisplayName(e.target.value)} placeholder="Felix"/></label>
+        <label className="space-y-2"><span className="text-sm font-semibold">Booking link name</span><div className="flex items-center rounded-md border border-input bg-background focus-within:ring-2 focus-within:ring-ring"><span className="whitespace-nowrap pl-3 text-sm text-muted-foreground">/book/</span><Input value={bookingSlug} onChange={e=>setBookingSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g,"-"))} placeholder="felix-abayomi" className="border-0 shadow-none focus-visible:ring-0"/></div><span className="block text-xs text-muted-foreground">You may change this independently of your display name. Previously shared links will redirect here.</span></label>
         <label className="space-y-2"><span className="text-sm font-semibold">Owner timezone</span><Input value={timezone} onChange={e=>setTimezone(e.target.value)} placeholder="America/New_York"/></label>
         <label className="space-y-2"><span className="text-sm font-semibold">Meeting length (minutes)</span><Input type="number" min={15} max={180} value={duration} onChange={e=>setDuration(Number(e.target.value))}/></label>
         <label className="space-y-2"><span className="text-sm font-semibold">Buffer after meetings (minutes)</span><Input type="number" min={0} max={60} value={buffer} onChange={e=>setBuffer(Number(e.target.value))}/></label>
         <label className="space-y-2"><span className="text-sm font-semibold">Maximum direct bookings per day</span><select value={maxBookingsPerDay ?? "unlimited"} onChange={e=>setMaxBookingsPerDay(e.target.value==="unlimited"?null:Number(e.target.value))} className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"><option value="unlimited">Unlimited — use available hours</option>{[1,2,3,4,5].map(count=><option key={count} value={count}>{count} booking{count===1?"":"s"} per day</option>)}</select><span className="block text-xs text-muted-foreground">Once reached, all remaining public times for that day close.</span></label>
-        <label className="flex items-start gap-3 rounded-2xl border border-primary/20 bg-primary/5 p-4"><input type="checkbox" className="mt-1 h-4 w-4" checked={alwaysAvailable} onChange={e=>setAlwaysAvailable(e.target.checked)}/><span><strong className="block">24-hour availability</strong><span className="text-sm text-muted-foreground">Offer times around the clock, seven days a week. Calendar conflicts, buffers, blocked times, and the daily booking cap still apply.</span></span></label>
       </div>
-      <div className="space-y-3"><div><h3 className="font-bold">Weekly availability</h3><p className="text-sm text-muted-foreground">{alwaysAvailable?"24-hour availability is active; these weekly hours are saved but temporarily ignored.":"Choose the recurring hours offered on each day."}</p></div>{!alwaysAvailable&&availability.map(item=><div key={item.day} className="grid grid-cols-[110px_1fr] sm:grid-cols-[140px_100px_1fr_1fr] gap-3 items-center rounded-2xl border p-3"><span className="font-medium">{dayNames[item.day]}</span><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={item.enabled} onChange={e=>updateWindow(item.day,{enabled:e.target.checked})}/>{item.enabled?"Available":"Closed"}</label>{item.enabled&&<><Input type="time" aria-label={`${dayNames[item.day]} start time`} value={item.start} onChange={e=>updateWindow(item.day,{start:e.target.value})}/><Input type="time" aria-label={`${dayNames[item.day]} end time`} value={item.end} onChange={e=>updateWindow(item.day,{end:e.target.value})}/></>}</div>)}</div>
+      <div className="space-y-3"><div><h3 className="font-bold">Weekly availability</h3><p className="text-sm text-muted-foreground">Each day can be closed, use custom hours, or remain available for the full 24 hours.</p></div>{availability.map(item=><div key={item.day} className="grid gap-3 rounded-2xl border p-3 sm:grid-cols-[130px_100px_110px_1fr_1fr] sm:items-center"><span className="font-medium">{dayNames[item.day]}</span><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={item.enabled} onChange={e=>updateWindow(item.day,{enabled:e.target.checked})}/>{item.enabled?"Available":"Closed"}</label>{item.enabled&&<><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={Boolean(item.allDay)} onChange={e=>updateWindow(item.day,{allDay:e.target.checked,start:e.target.checked?"00:00":item.start==="00:00"?"09:00":item.start,end:e.target.checked?"24:00":item.end==="24:00"?"17:00":item.end})}/>24 hours</label>{!item.allDay&&<><Input type="time" aria-label={`${dayNames[item.day]} start time`} value={item.start} onChange={e=>updateWindow(item.day,{start:e.target.value})}/><Input type="time" aria-label={`${dayNames[item.day]} end time`} value={item.end} onChange={e=>updateWindow(item.day,{end:e.target.value})}/></>}</>}</div>)}</div>
       <div className="space-y-4 rounded-2xl border p-4 sm:p-5">
-        <div className="flex items-start gap-3"><Ban className="mt-0.5 h-5 w-5 text-primary"/><div><h3 className="font-bold">Block specific dates and times</h3><p className="text-sm text-muted-foreground">Add vacations, appointments, or one-time periods that must never appear on your public booking page.</p></div></div>
+        <div className="flex items-start gap-3"><Ban className="mt-0.5 h-5 w-5 text-primary"/><div><h3 className="font-bold">Block specific dates and times</h3><p className="text-sm text-muted-foreground">Add as many separate blocked periods as you need on the same date—for example 9:00–11:00 and 2:00–4:00—or block the entire day.</p></div></div>
         <div className="grid gap-3 sm:grid-cols-[1.2fr_auto_1fr_1fr_auto] sm:items-end">
           <label className="space-y-2"><span className="text-sm font-semibold">Date</span><Input type="date" value={blackoutDate} onChange={e=>setBlackoutDate(e.target.value)}/></label>
           <label className="flex h-10 items-center gap-2 text-sm"><input type="checkbox" checked={blackoutAllDay} onChange={e=>setBlackoutAllDay(e.target.checked)}/>All day</label>
