@@ -10,10 +10,7 @@ self.addEventListener("install", (event) => {
       "/logo-transparent.png",
     ])),
   );
-});
-
-self.addEventListener("message", (event) => {
-  if (event.data?.type === "SKIP_WAITING") self.skipWaiting();
+  self.skipWaiting();
 });
 
 self.addEventListener("fetch", (event) => {
