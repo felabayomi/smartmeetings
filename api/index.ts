@@ -32,7 +32,10 @@ function ensureSchedulingTables() {
       timezone TEXT NOT NULL,
       duration_minutes INTEGER NOT NULL DEFAULT 30,
       buffer_minutes INTEGER NOT NULL DEFAULT 0,
+      always_available BOOLEAN NOT NULL DEFAULT FALSE,
+      max_bookings_per_day INTEGER,
       availability JSONB NOT NULL DEFAULT '[]'::jsonb,
+      blackouts JSONB NOT NULL DEFAULT '[]'::jsonb,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     CREATE TABLE IF NOT EXISTS bookings (
@@ -72,6 +75,9 @@ function ensureSchedulingTables() {
     );
     CREATE INDEX IF NOT EXISTS bookings_owner_time_idx ON bookings(owner_id, start_time, end_time);
     CREATE INDEX IF NOT EXISTS poll_responses_poll_idx ON poll_responses(poll_id);
+    ALTER TABLE scheduling_profiles ADD COLUMN IF NOT EXISTS always_available BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE scheduling_profiles ADD COLUMN IF NOT EXISTS max_bookings_per_day INTEGER;
+    ALTER TABLE scheduling_profiles ADD COLUMN IF NOT EXISTS blackouts JSONB NOT NULL DEFAULT '[]'::jsonb;
   `);
   return schedulingReady;
 }
@@ -104,10 +110,14 @@ function slotCandidates(profile, from = new Date(), days = 30) {
     const date = addDays(baseDate, offset);
     const dateText = date.toISOString().slice(0, 10);
     const day = date.getUTCDay();
-    const window = availability.find((item) => Number(item.day) === day && item.enabled);
+    const window = profile.always_available
+      ? { enabled: true, start: "00:00", end: "24:00" }
+      : availability.find((item) => Number(item.day) === day && item.enabled);
     if (!window) continue;
     let cursor = fromZonedTime(`${dateText}T${window.start}:00`, profile.timezone);
-    const end = fromZonedTime(`${dateText}T${window.end}:00`, profile.timezone);
+    const end = window.end === "24:00"
+      ? fromZonedTime(`${addDays(date, 1).toISOString().slice(0, 10)}T00:00:00`, profile.timezone)
+      : fromZonedTime(`${dateText}T${window.end}:00`, profile.timezone);
     while (addMinutes(cursor, duration) <= end) {
       if (cursor > addMinutes(new Date(), 30)) slots.push({ startTime: cursor.toISOString(), endTime: addMinutes(cursor, duration).toISOString() });
       cursor = addMinutes(cursor, duration + Number(profile.buffer_minutes || 0));
@@ -116,13 +126,53 @@ function slotCandidates(profile, from = new Date(), days = 30) {
   return slots;
 }
 
+function overlapsBlackout(slot, profile) {
+  const blackouts = Array.isArray(profile.blackouts) ? profile.blackouts : [];
+  const ownerDate = formatInTimeZone(slot.startTime, profile.timezone, "yyyy-MM-dd");
+  return blackouts.some((blackout) => {
+    if (blackout.date !== ownerDate) return false;
+    if (blackout.allDay) return true;
+    const start = fromZonedTime(`${blackout.date}T${blackout.start}:00`, profile.timezone);
+    const end = fromZonedTime(`${blackout.date}T${blackout.end}:00`, profile.timezone);
+    return new Date(slot.startTime) < end && new Date(slot.endTime) > start;
+  });
+}
+
 async function availableSlots(profile, from = new Date(), days = 30) {
-  const candidates = slotCandidates(profile, from, Math.min(days, 60));
+  const candidates = slotCandidates(profile, from, Math.min(days, 60)).filter((slot) => !overlapsBlackout(slot, profile));
   if (!candidates.length) return [];
   const end = candidates[candidates.length - 1].endTime;
   const buffer = Number(profile.buffer_minutes || 0);
-  const busy = await pool.query("SELECT start_time, COALESCE(end_time, start_time + interval '30 minutes') AS end_time FROM meetings WHERE calendar_token = $1 AND start_time < ($2::timestamptz + ($4::int * interval '1 minute')) AND COALESCE(end_time, start_time + interval '30 minutes') > ($3::timestamptz - ($4::int * interval '1 minute'))", [profile.user_id, end, candidates[0].startTime, buffer]);
-  return candidates.filter((slot) => !busy.rows.some((item) => new Date(item.start_time) < addMinutes(new Date(slot.endTime), buffer) && addMinutes(new Date(item.end_time), buffer) > new Date(slot.startTime)));
+  const firstOwnerDate = formatInTimeZone(candidates[0].startTime, profile.timezone, "yyyy-MM-dd");
+  const lastOwnerDate = formatInTimeZone(candidates[candidates.length - 1].startTime, profile.timezone, "yyyy-MM-dd");
+  const bookingRangeStart = fromZonedTime(`${firstOwnerDate}T00:00:00`, profile.timezone).toISOString();
+  const bookingRangeEndDate = addDays(new Date(`${lastOwnerDate}T12:00:00Z`), 1).toISOString().slice(0, 10);
+  const bookingRangeEnd = fromZonedTime(`${bookingRangeEndDate}T00:00:00`, profile.timezone).toISOString();
+  const [busy, bookings] = await Promise.all([
+    pool.query("SELECT start_time, COALESCE(end_time, start_time + interval '30 minutes') AS end_time FROM meetings WHERE calendar_token = $1 AND start_time < ($2::timestamptz + ($4::int * interval '1 minute')) AND COALESCE(end_time, start_time + interval '30 minutes') > ($3::timestamptz - ($4::int * interval '1 minute'))", [profile.user_id, end, candidates[0].startTime, buffer]),
+    profile.max_bookings_per_day ? pool.query("SELECT start_time FROM bookings WHERE owner_id = $1 AND start_time >= $2 AND start_time < $3", [profile.user_id, bookingRangeStart, bookingRangeEnd]) : Promise.resolve({ rows: [] }),
+  ]);
+  const bookingsPerDay = new Map();
+  bookings.rows.forEach((item) => {
+    const date = formatInTimeZone(item.start_time, profile.timezone, "yyyy-MM-dd");
+    bookingsPerDay.set(date, (bookingsPerDay.get(date) || 0) + 1);
+  });
+  return candidates.filter((slot) => {
+    const date = formatInTimeZone(slot.startTime, profile.timezone, "yyyy-MM-dd");
+    if (profile.max_bookings_per_day && (bookingsPerDay.get(date) || 0) >= profile.max_bookings_per_day) return false;
+    return !busy.rows.some((item) => new Date(item.start_time) < addMinutes(new Date(slot.endTime), buffer) && addMinutes(new Date(item.end_time), buffer) > new Date(slot.startTime));
+  });
+}
+
+function normalizeBlackouts(value) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 200).flatMap((item) => {
+    const date = typeof item?.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(item.date) ? item.date : null;
+    if (!date) return [];
+    if (item.allDay) return [{ id: String(item.id || randomUUID()), date, allDay: true, start: "00:00", end: "24:00" }];
+    if (!/^\d{2}:\d{2}$/.test(item.start || "") || !/^\d{2}:\d{2}$/.test(item.end || "") || item.start >= item.end) return [];
+    return [{ id: String(item.id || randomUUID()), date, allDay: false, start: item.start, end: item.end }];
+  });
 }
 
 function pollPayload(row, responses = []) {
@@ -345,6 +395,17 @@ export default async function handler(request, response) {
       try {
         await client.query("BEGIN");
         await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [profile.user_id]);
+        if (profile.max_bookings_per_day) {
+          const ownerDate = formatInTimeZone(selected.startTime, profile.timezone, "yyyy-MM-dd");
+          const dayStart = fromZonedTime(`${ownerDate}T00:00:00`, profile.timezone);
+          const nextDate = addDays(new Date(`${ownerDate}T12:00:00Z`), 1).toISOString().slice(0, 10);
+          const dayEnd = fromZonedTime(`${nextDate}T00:00:00`, profile.timezone);
+          const dailyCount = await client.query("SELECT COUNT(*)::int AS count FROM bookings WHERE owner_id = $1 AND start_time >= $2 AND start_time < $3", [profile.user_id, dayStart.toISOString(), dayEnd.toISOString()]);
+          if (dailyCount.rows[0].count >= profile.max_bookings_per_day) {
+            await client.query("ROLLBACK");
+            return response.status(409).json({ error: "This day has reached its booking limit" });
+          }
+        }
         const conflict = await client.query("SELECT 1 FROM meetings WHERE calendar_token = $1 AND start_time < ($2::timestamptz + ($4::int * interval '1 minute')) AND COALESCE(end_time, start_time + interval '30 minutes') > ($3::timestamptz - ($4::int * interval '1 minute')) LIMIT 1", [profile.user_id, selected.endTime, selected.startTime, Number(profile.buffer_minutes || 0)]);
         if (conflict.rowCount) { await client.query("ROLLBACK"); return response.status(409).json({ error: "That time was just booked" }); }
         const inserted = await client.query("INSERT INTO meetings (calendar_token,title,description,start_time,end_time,timezone,organizer,notes,color) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *", [profile.user_id, `Meeting with ${guestName.trim()}`, notes || `Booked by ${guestEmail}`, selected.startTime, selected.endTime, profile.timezone, guestName.trim(), `Guest: ${guestEmail}${guestTimezone ? ` • ${guestTimezone}` : ""}${notes ? `\n${notes}` : ""}`, "#10b981"]);
@@ -385,7 +446,7 @@ export default async function handler(request, response) {
       const existing = await pool.query("SELECT * FROM scheduling_profiles WHERE user_id = $1", [userId]);
       if (!existing.rowCount) return response.status(200).json(null);
       const row = existing.rows[0];
-      return response.status(200).json({ ...publicProfile(row), availability: row.availability });
+      return response.status(200).json({ ...publicProfile(row), availability: row.availability, alwaysAvailable: row.always_available, maxBookingsPerDay: row.max_bookings_per_day, blackouts: row.blackouts });
     }
     if (path === "/scheduling/profile" && request.method === "PUT") {
       await ensureSchedulingTables();
@@ -400,9 +461,12 @@ export default async function handler(request, response) {
         if (taken.rowCount) slug = `${slug}-${Math.random().toString(36).slice(2, 7)}`;
       }
       const availability = Array.isArray(body.availability) ? body.availability : defaultAvailability;
-      const result = await pool.query(`INSERT INTO scheduling_profiles (user_id,slug,display_name,timezone,duration_minutes,buffer_minutes,availability) VALUES ($1,$2,$3,$4,$5,$6,$7)
-        ON CONFLICT (user_id) DO UPDATE SET slug=EXCLUDED.slug,display_name=EXCLUDED.display_name,timezone=EXCLUDED.timezone,duration_minutes=EXCLUDED.duration_minutes,buffer_minutes=EXCLUDED.buffer_minutes,availability=EXCLUDED.availability,updated_at=NOW() RETURNING *`, [userId, slug, body.displayName.trim(), body.timezone, Math.max(15, Math.min(180, Number(body.durationMinutes || 30))), Math.max(0, Math.min(60, Number(body.bufferMinutes || 0))), JSON.stringify(availability)]);
-      return response.status(200).json({ ...publicProfile(result.rows[0]), availability: result.rows[0].availability });
+      const maxBookingsPerDay = [1, 2, 3, 4, 5].includes(Number(body.maxBookingsPerDay)) ? Number(body.maxBookingsPerDay) : null;
+      const blackouts = normalizeBlackouts(body.blackouts);
+      const result = await pool.query(`INSERT INTO scheduling_profiles (user_id,slug,display_name,timezone,duration_minutes,buffer_minutes,availability,always_available,max_bookings_per_day,blackouts) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+        ON CONFLICT (user_id) DO UPDATE SET slug=EXCLUDED.slug,display_name=EXCLUDED.display_name,timezone=EXCLUDED.timezone,duration_minutes=EXCLUDED.duration_minutes,buffer_minutes=EXCLUDED.buffer_minutes,availability=EXCLUDED.availability,always_available=EXCLUDED.always_available,max_bookings_per_day=EXCLUDED.max_bookings_per_day,blackouts=EXCLUDED.blackouts,updated_at=NOW() RETURNING *`, [userId, slug, body.displayName.trim(), body.timezone, Math.max(15, Math.min(180, Number(body.durationMinutes || 30))), Math.max(0, Math.min(60, Number(body.bufferMinutes || 0))), JSON.stringify(availability), Boolean(body.alwaysAvailable), maxBookingsPerDay, JSON.stringify(blackouts)]);
+      const row = result.rows[0];
+      return response.status(200).json({ ...publicProfile(row), availability: row.availability, alwaysAvailable: row.always_available, maxBookingsPerDay: row.max_bookings_per_day, blackouts: row.blackouts });
     }
     if (path === "/scheduling/polls" && request.method === "GET") {
       await ensureSchedulingTables();

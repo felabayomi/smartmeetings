@@ -27,15 +27,50 @@ const queryClient = new QueryClient({
 });
 
 function ServiceWorkerRegistrar() {
+  const [waitingWorker, setWaitingWorker] = useState<ServiceWorker | null>(null);
+
   useEffect(() => {
-    if ("serviceWorker" in navigator) {
-      navigator.serviceWorker
-        .register("/sw.js", { scope: "/" })
-        .then((reg) => console.log("SW registered:", reg.scope))
-        .catch((err) => console.warn("SW registration failed:", err));
-    }
+    if (!("serviceWorker" in navigator)) return;
+    let reloading = false;
+    let registration: ServiceWorkerRegistration | null = null;
+
+    const showWaitingWorker = (worker: ServiceWorker | null) => {
+      if (worker && navigator.serviceWorker.controller) setWaitingWorker(worker);
+    };
+    const handleControllerChange = () => {
+      if (reloading) return;
+      reloading = true;
+      window.location.reload();
+    };
+    const checkForUpdate = () => { if (document.visibilityState === "visible") void registration?.update(); };
+
+    navigator.serviceWorker.addEventListener("controllerchange", handleControllerChange);
+    document.addEventListener("visibilitychange", checkForUpdate);
+    navigator.serviceWorker.register("/sw.js", { scope: "/" }).then((reg) => {
+      registration = reg;
+      showWaitingWorker(reg.waiting);
+      reg.addEventListener("updatefound", () => {
+        const installing = reg.installing;
+        installing?.addEventListener("statechange", () => {
+          if (installing.state === "installed") showWaitingWorker(reg.waiting || installing);
+        });
+      });
+      void reg.update();
+    }).catch((err) => console.warn("SW registration failed:", err));
+
+    return () => {
+      navigator.serviceWorker.removeEventListener("controllerchange", handleControllerChange);
+      document.removeEventListener("visibilitychange", checkForUpdate);
+    };
   }, []);
-  return null;
+
+  if (!waitingWorker) return null;
+  return (
+    <div role="status" className="fixed inset-x-3 bottom-3 z-[100] mx-auto flex max-w-lg items-center justify-between gap-4 rounded-2xl border border-primary/20 bg-slate-950 px-4 py-3 text-white shadow-2xl sm:bottom-5">
+      <div><p className="font-semibold">Update available</p><p className="text-sm text-slate-300">Restart MeetMind to use the latest version.</p></div>
+      <button type="button" onClick={() => waitingWorker.postMessage({ type: "SKIP_WAITING" })} className="flex-shrink-0 rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-slate-100">Restart</button>
+    </div>
+  );
 }
 
 function ProtectedApp() {
