@@ -131,7 +131,7 @@ function pollPayload(row, responses = []) {
   return { id: row.id, slug: row.slug, title: row.title, description: row.description, timezone: row.timezone, durationMinutes: row.duration_minutes, options: row.options, status: row.status, finalStart: row.final_start, counts, responseCount: responses.length };
 }
 
-const meetingSchema = {
+const extractedMeetingSchema = {
   type: "object",
   additionalProperties: false,
   properties: {
@@ -150,6 +150,20 @@ const meetingSchema = {
     "title", "description", "startTime", "endTime", "timezone",
     "location", "organizer", "meetingUrl", "notes", "confidence",
   ],
+};
+
+const meetingBatchSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    meetings: {
+      type: "array",
+      minItems: 1,
+      maxItems: 25,
+      items: extractedMeetingSchema,
+    },
+  },
+  required: ["meetings"],
 };
 
 function meeting(row: Record<string, unknown>) {
@@ -262,7 +276,7 @@ async function extractMeeting(request, response) {
         content: [
           {
             type: "input_text",
-            text: `Extract the meeting details from this image. Identify the host or organizer, not merely the attendee. Resolve relative dates using today's date, ${new Date().toISOString().slice(0, 10)}. Return startTime and endTime as ISO 8601 timestamps with the correct UTC offset. Use an IANA timezone name when it can be determined. Use null for information that is not visible.`,
+            text: `Extract EVERY distinct meeting, appointment, or schedule row visible in this image, in top-to-bottom order. Return one array item per distinct event; never merge separate rows. Identify the named person as organizer when appropriate. If no event title is shown, use "Meeting with [person's name]" rather than inventing a generic title. Resolve relative dates using today's date, ${new Date().toISOString().slice(0, 10)}. Return startTime and endTime as ISO 8601 timestamps with the correct UTC offset. Use an IANA timezone name when it can be determined. When an end time, location, URL, or other value is not visible, return null and do not guess. Preserve explicit time-zone equivalences from the image.`,
           },
           {
             type: "input_image",
@@ -274,9 +288,9 @@ async function extractMeeting(request, response) {
       text: {
         format: {
           type: "json_schema",
-          name: "meeting_details",
+          name: "meeting_batch",
           strict: true,
-          schema: meetingSchema,
+          schema: meetingBatchSchema,
         },
       },
     }),
@@ -293,7 +307,11 @@ async function extractMeeting(request, response) {
     .find((item) => item.type === "output_text")?.text;
   if (!outputText) return response.status(502).json({ error: "AI returned no meeting details" });
 
-  return response.status(200).json(JSON.parse(outputText));
+  const parsed = JSON.parse(outputText);
+  if (!Array.isArray(parsed.meetings) || !parsed.meetings.length) {
+    return response.status(502).json({ error: "AI found no meeting details" });
+  }
+  return response.status(200).json(parsed);
 }
 
 export default async function handler(request, response) {

@@ -1,7 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { useExtractMeetingFromImage } from '@workspace/api-client-react';
-import { Upload, X, Loader2, Image as ImageIcon, Sparkles } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import { Upload, Loader2, Sparkles } from 'lucide-react';
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useToast } from '@/hooks/use-toast';
@@ -22,7 +21,11 @@ export function AiUploadModal({ isOpen, onClose, onExtracted }: AiUploadModalPro
   const extractMutation = useExtractMeetingFromImage({
     mutation: {
       onSuccess: (data) => {
-        toast({ title: "Extraction successful!", description: "Review the details below." });
+        const count = Array.isArray((data as any)?.meetings) ? (data as any).meetings.length : 1;
+        toast({
+          title: `${count} meeting${count === 1 ? "" : "s"} found`,
+          description: count === 1 ? "Review the details below." : "Review and save each meeting separately.",
+        });
         onExtracted(data);
         reset();
       },

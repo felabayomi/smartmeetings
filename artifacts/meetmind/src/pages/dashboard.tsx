@@ -29,6 +29,9 @@ export default function Dashboard() {
   const [formOpen, setFormOpen] = useState(false);
   const [selectedMeeting, setSelectedMeeting] = useState<Partial<Meeting> | undefined>(undefined);
   const [isAiExtracted, setIsAiExtracted] = useState(false);
+  const [aiMeetingQueue, setAiMeetingQueue] = useState<Partial<Meeting>[]>([]);
+  const [aiMeetingTotal, setAiMeetingTotal] = useState(0);
+  const [aiReviewKey, setAiReviewKey] = useState(0);
 
   // ── Read-only detail modal ──────────────────────────────────────────────────
   const [detailOpen, setDetailOpen] = useState(false);
@@ -49,6 +52,8 @@ export default function Dashboard() {
 
   // Header "New Meeting" → directly open blank form
   const openNewMeeting = () => {
+    setAiMeetingQueue([]);
+    setAiMeetingTotal(0);
     setSelectedMeeting(undefined);
     setIsAiExtracted(false);
     setFormOpen(true);
@@ -117,10 +122,37 @@ export default function Dashboard() {
   };
 
   const handleAiExtracted = (extractedData: any) => {
-    setSelectedMeeting({ ...extractedData, color: '#8b5cf6' });
+    const extractedMeetings = Array.isArray(extractedData?.meetings)
+      ? extractedData.meetings
+      : [extractedData];
+    const meetingsToReview = extractedMeetings.map((item: Partial<Meeting>) => ({ ...item, color: '#8b5cf6' }));
+    setSelectedMeeting(meetingsToReview[0]);
+    setAiMeetingQueue(meetingsToReview.slice(1));
+    setAiMeetingTotal(meetingsToReview.length);
+    setAiReviewKey((value) => value + 1);
     setIsAiExtracted(true);
     setAiModalOpen(false);
     setFormOpen(true);
+  };
+
+  const finishMeetingForm = () => {
+    if (isAiExtracted && aiMeetingQueue.length > 0) {
+      setSelectedMeeting(aiMeetingQueue[0]);
+      setAiMeetingQueue((queue) => queue.slice(1));
+      setAiReviewKey((value) => value + 1);
+      return;
+    }
+    setFormOpen(false);
+    setIsAiExtracted(false);
+    setAiMeetingQueue([]);
+    setAiMeetingTotal(0);
+  };
+
+  const cancelMeetingForm = () => {
+    setFormOpen(false);
+    setIsAiExtracted(false);
+    setAiMeetingQueue([]);
+    setAiMeetingTotal(0);
   };
 
   // ── Data ────────────────────────────────────────────────────────────────────
@@ -325,10 +357,12 @@ export default function Dashboard() {
           <DialogDescription className="sr-only">Create or edit a meeting.</DialogDescription>
           {formOpen && (
             <MeetingForm
+              key={aiReviewKey}
               initialData={selectedMeeting}
               isAiExtracted={isAiExtracted}
-              onSuccess={() => setFormOpen(false)}
-              onCancel={() => setFormOpen(false)}
+              aiReviewProgress={isAiExtracted ? { current: aiMeetingTotal - aiMeetingQueue.length, total: aiMeetingTotal } : undefined}
+              onSuccess={finishMeetingForm}
+              onCancel={cancelMeetingForm}
             />
           )}
         </DialogContent>

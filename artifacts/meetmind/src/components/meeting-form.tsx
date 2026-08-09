@@ -52,9 +52,10 @@ interface MeetingFormProps {
   onSuccess: () => void;
   onCancel: () => void;
   isAiExtracted?: boolean;
+  aiReviewProgress?: { current: number; total: number };
 }
 
-export function MeetingForm({ initialData, onSuccess, onCancel, isAiExtracted }: MeetingFormProps) {
+export function MeetingForm({ initialData, onSuccess, onCancel, isAiExtracted, aiReviewProgress }: MeetingFormProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const isEditing = !!initialData?.id;
@@ -158,6 +159,7 @@ export function MeetingForm({ initialData, onSuccess, onCancel, isAiExtracted }:
             <p className="text-sm text-primary mt-1 flex items-center">
               <SparklesIcon className="w-3 h-3 mr-1" />
               Extracted from screenshot. Please verify.
+              {aiReviewProgress && aiReviewProgress.total > 1 ? ` Meeting ${aiReviewProgress.current} of ${aiReviewProgress.total}.` : ""}
             </p>
           )}
         </div>
