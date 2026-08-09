@@ -186,10 +186,19 @@ function webRequest(request) {
 
 async function authenticatedUserId(request) {
   if (!process.env.CLERK_SECRET_KEY) throw new Error("Clerk is not configured");
+  const configuredParties = (process.env.AUTHORIZED_PARTIES || "")
+    .split(",")
+    .map((party) => party.trim())
+    .filter(Boolean);
   const parties = [
     "https://smart-meeting-minder.vercel.app",
+    "https://meetminder.app",
+    "https://www.meetminder.app",
+    "https://meetmind.us",
+    "https://www.meetmind.us",
     process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null,
     "http://localhost:5173",
+    ...configuredParties,
   ].filter(Boolean);
   const state = await clerk.authenticateRequest(webRequest(request), {
     authorizedParties: parties,
