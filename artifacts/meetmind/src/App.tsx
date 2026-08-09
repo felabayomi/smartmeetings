@@ -65,10 +65,15 @@ function ServiceWorkerRegistrar() {
   }, []);
 
   if (!waitingWorker) return null;
+  const restartForUpdate = () => {
+    waitingWorker.postMessage({ type: "SKIP_WAITING" });
+    setWaitingWorker(null);
+    window.setTimeout(() => window.location.reload(), 1500);
+  };
   return (
     <div role="status" className="fixed inset-x-3 bottom-3 z-[100] mx-auto flex max-w-lg items-center justify-between gap-4 rounded-2xl border border-primary/20 bg-slate-950 px-4 py-3 text-white shadow-2xl sm:bottom-5">
       <div><p className="font-semibold">Update available</p><p className="text-sm text-slate-300">Restart MeetMind to use the latest version.</p></div>
-      <button type="button" onClick={() => waitingWorker.postMessage({ type: "SKIP_WAITING" })} className="flex-shrink-0 rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-slate-100">Restart</button>
+      <button type="button" onClick={restartForUpdate} className="flex-shrink-0 rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-slate-100">Restart</button>
     </div>
   );
 }

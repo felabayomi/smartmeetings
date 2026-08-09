@@ -365,6 +365,8 @@ async function extractMeeting(request, response) {
 }
 
 export default async function handler(request, response) {
+  response.setHeader("Cache-Control", "private, no-store, max-age=0");
+  response.setHeader("Vary", "Authorization");
   const path = request.url.split("?")[0].replace(/^\/api/, "");
 
   try {
