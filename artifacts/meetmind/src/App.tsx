@@ -15,6 +15,7 @@ import AuthPage from "./pages/auth";
 import Scheduling from "./pages/scheduling";
 import PublicBooking from "./pages/public-booking";
 import PublicPoll from "./pages/public-poll";
+import { DataPrivacy, HowToUse, TermsOfUse } from "./pages/information";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -92,6 +93,9 @@ function Router() {
       </Route>
       <Route path="/book/:slug" component={PublicBooking} />
       <Route path="/poll/:slug" component={PublicPoll} />
+      <Route path="/terms" component={TermsOfUse} />
+      <Route path="/privacy" component={DataPrivacy} />
+      <Route path="/how-to-use" component={HowToUse} />
       <Route path="/app/:rest*" component={ProtectedApp} />
       <Route path="/app" component={ProtectedApp} />
       <Route component={NotFound} />
