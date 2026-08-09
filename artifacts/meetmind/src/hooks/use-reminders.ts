@@ -9,13 +9,6 @@ export function useReminders() {
   const { toast } = useToast();
 
   useEffect(() => {
-    // Request permission on mount
-    if ('Notification' in window && Notification.permission === 'default') {
-      Notification.requestPermission();
-    }
-  }, []);
-
-  useEffect(() => {
     if (!meetings || meetings.length === 0) return;
 
     const checkReminders = () => {

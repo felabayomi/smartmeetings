@@ -26,6 +26,7 @@ export function usePushNotifications() {
   const [state, setState] = useState<PushState>("loading");
 
   useEffect(() => {
+    let cancelled = false;
     if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
       setState("unsupported");
       return;
@@ -34,11 +35,38 @@ export function usePushNotifications() {
       setState("denied");
       return;
     }
-    navigator.serviceWorker.ready.then((reg) => {
-      reg.pushManager.getSubscription().then((sub) => {
-        setState(sub ? "subscribed" : "prompt");
-      });
-    });
+    const refreshState = async () => {
+      try {
+        const reg = await navigator.serviceWorker.ready;
+        const sub = await reg.pushManager.getSubscription();
+        if (cancelled) return;
+        if (sub) {
+          setState("subscribed");
+          return;
+        }
+
+        // Do not ask for browser permission unless the server can finish the
+        // subscription. This prevents an endless enable prompt on mobile.
+        await getVapidKey();
+        if (!cancelled) setState("prompt");
+      } catch (err) {
+        console.warn("Push notifications are not configured:", err);
+        if (!cancelled) setState("unsupported");
+      }
+    };
+
+    void refreshState();
+    const refreshAfterResume = () => {
+      if (document.visibilityState === "visible") void refreshState();
+    };
+    document.addEventListener("visibilitychange", refreshAfterResume);
+    window.addEventListener("pageshow", refreshAfterResume);
+
+    return () => {
+      cancelled = true;
+      document.removeEventListener("visibilitychange", refreshAfterResume);
+      window.removeEventListener("pageshow", refreshAfterResume);
+    };
   }, []);
 
   const subscribe = useCallback(async () => {
@@ -65,7 +93,7 @@ export function usePushNotifications() {
       setState("subscribed");
     } catch (err) {
       console.error("Push subscribe error:", err);
-      setState("prompt");
+      setState(Notification.permission === "granted" ? "unsupported" : "prompt");
     }
   }, []);
 
