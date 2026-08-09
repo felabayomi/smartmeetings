@@ -577,9 +577,26 @@ export default async function handler(request, response) {
         return response.status(200).json(meeting(result.rows[0]));
       }
       if (request.method === "DELETE") {
-        const result = await pool.query("DELETE FROM meetings WHERE id = $1 AND calendar_token = $2", [id, userId]);
-        if (!result.rowCount) return response.status(404).json({ error: "Meeting not found" });
-        return response.status(200).json({ success: true });
+        const client = await pool.connect();
+        try {
+          await client.query("BEGIN");
+          await client.query(`DELETE FROM bookings
+            WHERE owner_id = $2 AND meeting_id IN (
+              SELECT id FROM meetings WHERE id = $1 AND calendar_token = $2
+            )`, [id, userId]);
+          const result = await client.query("DELETE FROM meetings WHERE id = $1 AND calendar_token = $2", [id, userId]);
+          if (!result.rowCount) {
+            await client.query("ROLLBACK");
+            return response.status(404).json({ error: "Meeting not found" });
+          }
+          await client.query("COMMIT");
+          return response.status(200).json({ success: true });
+        } catch (error) {
+          await client.query("ROLLBACK");
+          throw error;
+        } finally {
+          client.release();
+        }
       }
     }
 
