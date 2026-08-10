@@ -14,6 +14,7 @@ import Landing from "./pages/landing";
 import AuthPage from "./pages/auth";
 import Scheduling from "./pages/scheduling";
 import PublicBooking from "./pages/public-booking";
+import RescheduleBooking from "./pages/reschedule-booking";
 import PublicPoll from "./pages/public-poll";
 import { DataPrivacy, HowToUse, TermsOfUse } from "./pages/information";
 
@@ -99,6 +100,7 @@ function Router() {
         {isLoaded && isSignedIn ? <Redirect to="/app" /> : <AuthPage><SignUp routing="path" path="/sign-up" signInUrl="/sign-in" /></AuthPage>}
       </Route>
       <Route path="/book/:slug" component={PublicBooking} />
+      <Route path="/manage/:token" component={RescheduleBooking} />
       <Route path="/poll/:slug" component={PublicPoll} />
       <Route path="/terms" component={TermsOfUse} />
       <Route path="/privacy" component={DataPrivacy} />

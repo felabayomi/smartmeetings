@@ -83,6 +83,8 @@ function ensureSchedulingTables() {
     ALTER TABLE scheduling_profiles ADD COLUMN IF NOT EXISTS always_available BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE scheduling_profiles ADD COLUMN IF NOT EXISTS max_bookings_per_day INTEGER;
     ALTER TABLE scheduling_profiles ADD COLUMN IF NOT EXISTS blackouts JSONB NOT NULL DEFAULT '[]'::jsonb;
+    ALTER TABLE bookings ADD COLUMN IF NOT EXISTS manage_token TEXT;
+    CREATE UNIQUE INDEX IF NOT EXISTS bookings_manage_token_idx ON bookings(manage_token) WHERE manage_token IS NOT NULL;
   `);
   return schedulingReady;
 }
@@ -117,6 +119,7 @@ function slotCandidates(profile, from = new Date(), days = 30) {
   for (let offset = 0; offset < days; offset++) {
     const date = addDays(baseDate, offset);
     const dateText = date.toISOString().slice(0, 10);
+    if (dateText === ownerDate) continue;
     const day = date.getUTCDay();
     const window = profile.always_available
       ? { enabled: true, allDay: true, start: "00:00", end: "24:00" }
@@ -148,7 +151,7 @@ function overlapsBlackout(slot, profile) {
   });
 }
 
-async function availableSlots(profile, from = new Date(), days = 30) {
+async function availableSlots(profile, from = new Date(), days = 30, exclude = {}) {
   const candidates = slotCandidates(profile, from, Math.min(days, 60)).filter((slot) => !overlapsBlackout(slot, profile));
   if (!candidates.length) return [];
   const end = candidates[candidates.length - 1].endTime;
@@ -159,8 +162,8 @@ async function availableSlots(profile, from = new Date(), days = 30) {
   const bookingRangeEndDate = addDays(new Date(`${lastOwnerDate}T12:00:00Z`), 1).toISOString().slice(0, 10);
   const bookingRangeEnd = fromZonedTime(`${bookingRangeEndDate}T00:00:00`, profile.timezone).toISOString();
   const [busy, bookings] = await Promise.all([
-    pool.query("SELECT start_time, COALESCE(end_time, start_time + interval '30 minutes') AS end_time FROM meetings WHERE calendar_token = $1 AND start_time < ($2::timestamptz + ($4::int * interval '1 minute')) AND COALESCE(end_time, start_time + interval '30 minutes') > ($3::timestamptz - ($4::int * interval '1 minute'))", [profile.user_id, end, candidates[0].startTime, buffer]),
-    profile.max_bookings_per_day ? pool.query("SELECT start_time FROM bookings WHERE owner_id = $1 AND start_time >= $2 AND start_time < $3", [profile.user_id, bookingRangeStart, bookingRangeEnd]) : Promise.resolve({ rows: [] }),
+    pool.query("SELECT start_time, COALESCE(end_time, start_time + interval '30 minutes') AS end_time FROM meetings WHERE calendar_token = $1 AND ($5::int IS NULL OR id <> $5) AND start_time < ($2::timestamptz + ($4::int * interval '1 minute')) AND COALESCE(end_time, start_time + interval '30 minutes') > ($3::timestamptz - ($4::int * interval '1 minute'))", [profile.user_id, end, candidates[0].startTime, buffer, exclude.meetingId || null]),
+    profile.max_bookings_per_day ? pool.query("SELECT start_time FROM bookings WHERE owner_id = $1 AND ($4::text IS NULL OR id <> $4) AND start_time >= $2 AND start_time < $3", [profile.user_id, bookingRangeStart, bookingRangeEnd, exclude.bookingId || null]) : Promise.resolve({ rows: [] }),
   ]);
   const bookingsPerDay = new Map();
   bookings.rows.forEach((item) => {
@@ -421,9 +424,84 @@ export default async function handler(request, response) {
         const conflict = await client.query("SELECT 1 FROM meetings WHERE calendar_token = $1 AND start_time < ($2::timestamptz + ($4::int * interval '1 minute')) AND COALESCE(end_time, start_time + interval '30 minutes') > ($3::timestamptz - ($4::int * interval '1 minute')) LIMIT 1", [profile.user_id, selected.endTime, selected.startTime, Number(profile.buffer_minutes || 0)]);
         if (conflict.rowCount) { await client.query("ROLLBACK"); return response.status(409).json({ error: "That time was just booked" }); }
         const inserted = await client.query("INSERT INTO meetings (calendar_token,title,description,start_time,end_time,timezone,organizer,notes,color) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *", [profile.user_id, `Meeting with ${guestName.trim()}`, notes || `Booked by ${guestEmail}`, selected.startTime, selected.endTime, profile.timezone, guestName.trim(), `Guest: ${guestEmail}${guestTimezone ? ` • ${guestTimezone}` : ""}${notes ? `\n${notes}` : ""}`, "#10b981"]);
-        await client.query("INSERT INTO bookings (id,owner_id,meeting_id,guest_name,guest_email,guest_timezone,notes,start_time,end_time) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)", [randomUUID(), profile.user_id, inserted.rows[0].id, guestName.trim(), guestEmail.trim(), guestTimezone || null, notes || null, selected.startTime, selected.endTime]);
+        const manageToken = randomUUID();
+        await client.query("INSERT INTO bookings (id,owner_id,meeting_id,guest_name,guest_email,guest_timezone,notes,start_time,end_time,manage_token) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)", [randomUUID(), profile.user_id, inserted.rows[0].id, guestName.trim(), guestEmail.trim(), guestTimezone || null, notes || null, selected.startTime, selected.endTime, manageToken]);
         await client.query("COMMIT");
-        return response.status(201).json({ success: true, meeting: meeting(inserted.rows[0]), ownerTimezone: profile.timezone });
+        return response.status(201).json({ success: true, meeting: meeting(inserted.rows[0]), ownerTimezone: profile.timezone, manageToken });
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally { client.release(); }
+    }
+
+    const bookingManagement = path.match(/^\/booking-management\/([^/]+)$/);
+    const bookingManagementSlots = path.match(/^\/booking-management\/([^/]+)\/slots$/);
+    if ((bookingManagement || bookingManagementSlots) && request.method === "GET") {
+      await ensureSchedulingTables();
+      const token = decodeURIComponent((bookingManagementSlots || bookingManagement)[1]);
+      const result = await pool.query(`SELECT booking.*, profile.user_id, profile.slug, profile.display_name, profile.timezone,
+        profile.duration_minutes, profile.buffer_minutes, profile.always_available,
+        profile.max_bookings_per_day, profile.availability, profile.blackouts
+        FROM bookings booking JOIN scheduling_profiles profile ON profile.user_id = booking.owner_id
+        WHERE booking.manage_token = $1 AND booking.meeting_id IS NOT NULL`, [token]);
+      if (!result.rowCount) return response.status(404).json({ error: "Rescheduling link not found" });
+      const booking = result.rows[0];
+      if (new Date(booking.start_time) <= new Date()) return response.status(410).json({ error: "This meeting has started or passed and can no longer be rescheduled" });
+      const payload = {
+        profile: publicProfile(booking),
+        booking: { guestName: booking.guest_name, startTime: booking.start_time, endTime: booking.end_time },
+      };
+      if (bookingManagementSlots) {
+        payload.slots = await availableSlots(booking, new Date(), Number(request.query?.days || 30), { meetingId: booking.meeting_id, bookingId: booking.id });
+      }
+      return response.status(200).json(payload);
+    }
+    if (bookingManagement && (request.method === "POST" || request.method === "PUT")) {
+      await ensureSchedulingTables();
+      const token = decodeURIComponent(bookingManagement[1]);
+      const initial = await pool.query(`SELECT booking.*, profile.user_id, profile.slug, profile.display_name, profile.timezone,
+        profile.duration_minutes, profile.buffer_minutes, profile.always_available,
+        profile.max_bookings_per_day, profile.availability, profile.blackouts
+        FROM bookings booking JOIN scheduling_profiles profile ON profile.user_id = booking.owner_id
+        WHERE booking.manage_token = $1 AND booking.meeting_id IS NOT NULL`, [token]);
+      if (!initial.rowCount) return response.status(404).json({ error: "Rescheduling link not found" });
+      if (new Date(initial.rows[0].start_time) <= new Date()) return response.status(410).json({ error: "This meeting can no longer be rescheduled" });
+      const requestedStart = request.body?.startTime;
+      if (!requestedStart) return response.status(400).json({ error: "Choose a new time" });
+      const allowed = await availableSlots(initial.rows[0], new Date(), 60, { meetingId: initial.rows[0].meeting_id, bookingId: initial.rows[0].id });
+      const selected = allowed.find((slot) => slot.startTime === new Date(requestedStart).toISOString());
+      if (!selected) return response.status(409).json({ error: "That time is no longer available" });
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [initial.rows[0].owner_id]);
+        const locked = await client.query("SELECT * FROM bookings WHERE manage_token = $1 AND meeting_id IS NOT NULL FOR UPDATE", [token]);
+        if (!locked.rowCount || new Date(locked.rows[0].start_time) <= new Date()) {
+          await client.query("ROLLBACK");
+          return response.status(410).json({ error: "This meeting can no longer be rescheduled" });
+        }
+        const current = locked.rows[0];
+        const profile = initial.rows[0];
+        if (profile.max_bookings_per_day) {
+          const ownerDate = formatInTimeZone(selected.startTime, profile.timezone, "yyyy-MM-dd");
+          const dayStart = fromZonedTime(`${ownerDate}T00:00:00`, profile.timezone);
+          const nextDate = addDays(new Date(`${ownerDate}T12:00:00Z`), 1).toISOString().slice(0, 10);
+          const dayEnd = fromZonedTime(`${nextDate}T00:00:00`, profile.timezone);
+          const count = await client.query("SELECT COUNT(*)::int AS count FROM bookings WHERE owner_id = $1 AND id <> $2 AND start_time >= $3 AND start_time < $4", [profile.user_id, current.id, dayStart.toISOString(), dayEnd.toISOString()]);
+          if (count.rows[0].count >= profile.max_bookings_per_day) {
+            await client.query("ROLLBACK");
+            return response.status(409).json({ error: "This day has reached its booking limit" });
+          }
+        }
+        const conflict = await client.query("SELECT 1 FROM meetings WHERE calendar_token = $1 AND id <> $2 AND start_time < ($3::timestamptz + ($5::int * interval '1 minute')) AND COALESCE(end_time, start_time + interval '30 minutes') > ($4::timestamptz - ($5::int * interval '1 minute')) LIMIT 1", [profile.user_id, current.meeting_id, selected.endTime, selected.startTime, Number(profile.buffer_minutes || 0)]);
+        if (conflict.rowCount) {
+          await client.query("ROLLBACK");
+          return response.status(409).json({ error: "That time was just booked" });
+        }
+        await client.query("UPDATE meetings SET start_time = $1, end_time = $2, timezone = $3, updated_at = NOW() WHERE id = $4 AND calendar_token = $5", [selected.startTime, selected.endTime, profile.timezone, current.meeting_id, profile.user_id]);
+        await client.query("UPDATE bookings SET start_time = $1, end_time = $2 WHERE id = $3", [selected.startTime, selected.endTime, current.id]);
+        await client.query("COMMIT");
+        return response.status(200).json({ success: true, profile: publicProfile(profile), booking: { guestName: current.guest_name, startTime: selected.startTime, endTime: selected.endTime } });
       } catch (error) {
         await client.query("ROLLBACK");
         throw error;
