@@ -2,7 +2,7 @@
 import pg from "pg";
 import { createClerkClient } from "@clerk/backend";
 import { randomUUID } from "node:crypto";
-import { addDays, addMinutes } from "date-fns";
+import { addDays, addHours, addMinutes } from "date-fns";
 import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
@@ -98,7 +98,7 @@ function validTimezone(value) {
 }
 
 function publicProfile(row) {
-  return { slug: row.slug, displayName: row.display_name, timezone: row.timezone, durationMinutes: row.duration_minutes, bufferMinutes: row.buffer_minutes };
+  return { slug: row.slug, displayName: row.display_name, timezone: row.timezone, durationMinutes: row.duration_minutes, bufferMinutes: row.buffer_minutes, minimumNoticeHours: 12 };
 }
 
 async function getProfileBySlug(slug) {
@@ -132,7 +132,7 @@ function slotCandidates(profile, from = new Date(), days = 30) {
       ? fromZonedTime(`${addDays(date, 1).toISOString().slice(0, 10)}T00:00:00`, profile.timezone)
       : fromZonedTime(`${dateText}T${endText}:00`, profile.timezone);
     while (addMinutes(cursor, duration) <= end) {
-      if (cursor > addMinutes(new Date(), 30)) slots.push({ startTime: cursor.toISOString(), endTime: addMinutes(cursor, duration).toISOString() });
+      if (cursor >= addHours(from, 12)) slots.push({ startTime: cursor.toISOString(), endTime: addMinutes(cursor, duration).toISOString() });
       cursor = addMinutes(cursor, duration + Number(profile.buffer_minutes || 0));
     }
   }
