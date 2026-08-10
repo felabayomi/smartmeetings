@@ -15,6 +15,7 @@ import AuthPage from "./pages/auth";
 import Scheduling from "./pages/scheduling";
 import PublicBooking from "./pages/public-booking";
 import RescheduleBooking from "./pages/reschedule-booking";
+import MyBookings from "./pages/my-bookings";
 import PublicPoll from "./pages/public-poll";
 import { DataPrivacy, HowToUse, TermsOfUse } from "./pages/information";
 
@@ -60,6 +61,7 @@ function ProtectedApp() {
       <Route path="/app" component={Dashboard} />
       <Route path="/app/list" component={MeetingsList} />
       <Route path="/app/scheduling" component={Scheduling} />
+      <Route path="/app/my-bookings" component={MyBookings} />
       <Route component={NotFound} />
     </Switch>
   );

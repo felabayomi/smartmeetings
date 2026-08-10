@@ -531,6 +531,30 @@ export default async function handler(request, response) {
     const userId = await authenticatedUserId(request);
     if (!userId) return response.status(401).json({ error: "Sign in required" });
 
+    if (path === "/guest-bookings" && request.method === "GET") {
+      await ensureSchedulingTables();
+      const clerkUser = await clerk.users.getUser(userId);
+      const verifiedEmails = clerkUser.emailAddresses
+        .filter((item) => item.verification?.status === "verified")
+        .map((item) => item.emailAddress.toLowerCase());
+      if (!verifiedEmails.length) return response.status(403).json({ error: "Verify your account email to recover bookings" });
+      const result = await pool.query(`SELECT booking.id, booking.manage_token, booking.start_time, booking.end_time,
+        booking.guest_name, booking.guest_email, profile.display_name, profile.timezone
+        FROM bookings booking JOIN scheduling_profiles profile ON profile.user_id = booking.owner_id
+        WHERE LOWER(booking.guest_email) = ANY($1::text[]) AND booking.meeting_id IS NOT NULL
+        ORDER BY booking.start_time`, [verifiedEmails]);
+      return response.status(200).json(result.rows.map((row) => ({
+        id: row.id,
+        manageToken: row.manage_token,
+        guestName: row.guest_name,
+        guestEmail: row.guest_email,
+        hostName: row.display_name,
+        ownerTimezone: row.timezone,
+        startTime: row.start_time,
+        endTime: row.end_time,
+      })));
+    }
+
     if (path === "/scheduling/profile" && request.method === "GET") {
       await ensureSchedulingTables();
       const existing = await pool.query("SELECT * FROM scheduling_profiles WHERE user_id = $1", [userId]);
