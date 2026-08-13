@@ -97,7 +97,7 @@ export function MeetingForm({ initialData, onSuccess, onCancel, isAiExtracted, a
     }
   });
 
-  // Format dates for datetime-local input in EST
+  // Format each absolute timestamp exactly once in the app's Eastern timezone.
   const formatForInput = (dateString?: string | null) => toDatetimeLocalEST(dateString);
 
   // Track how many reminder slots are visible (1–3)
@@ -127,7 +127,7 @@ export function MeetingForm({ initialData, onSuccess, onCancel, isAiExtracted, a
   });
 
   const onSubmit = (values: FormValues) => {
-    // Treat datetime-local values as EST and convert to UTC
+    // Treat the reviewed wall-clock value as Eastern and convert it once to UTC.
     const toIso = (val?: string | null) => fromDatetimeLocalEST(val);
 
     const payload = {

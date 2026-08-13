@@ -1,4 +1,4 @@
-import { toZonedTime, format as tzFormat, fromZonedTime } from "date-fns-tz";
+import { toZonedTime, formatInTimeZone, fromZonedTime } from "date-fns-tz";
 import { parseISO } from "date-fns";
 
 export const APP_TZ = "America/New_York";
@@ -11,12 +11,12 @@ export function toEST(utcSource: string | Date): Date {
 
 /** Format a UTC ISO string (or Date) as a time string in EST. */
 export function formatTimeEST(utcSource: string | Date, fmt = "h:mm a"): string {
-  return tzFormat(toEST(utcSource), fmt, { timeZone: APP_TZ });
+  return formatInTimeZone(utcSource, APP_TZ, fmt);
 }
 
 /** Format a UTC ISO string (or Date) as a date string in EST. */
 export function formatDateEST(utcSource: string | Date, fmt = "yyyy-MM-dd"): string {
-  return tzFormat(toEST(utcSource), fmt, { timeZone: APP_TZ });
+  return formatInTimeZone(utcSource, APP_TZ, fmt);
 }
 
 /**
@@ -26,7 +26,7 @@ export function formatDateEST(utcSource: string | Date, fmt = "yyyy-MM-dd"): str
 export function toDatetimeLocalEST(utcSource: string | Date | null | undefined): string {
   if (!utcSource) return "";
   try {
-    return tzFormat(toEST(utcSource), "yyyy-MM-dd'T'HH:mm", { timeZone: APP_TZ });
+    return formatInTimeZone(utcSource, APP_TZ, "yyyy-MM-dd'T'HH:mm");
   } catch {
     return "";
   }
