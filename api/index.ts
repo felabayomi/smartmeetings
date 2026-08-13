@@ -261,6 +261,11 @@ function normalizeBlackouts(value) {
   });
 }
 
+function normalizeBufferMinutes(value) {
+  const minutes = Number(value);
+  return Number.isFinite(minutes) ? Math.max(0, Math.min(720, Math.round(minutes))) : 0;
+}
+
 function pollPayload(row, responses = []) {
   const counts = Object.fromEntries((row.options || []).map((option) => [option, 0]));
   responses.forEach((response) => (response.selections || []).forEach((option) => { if (option in counts) counts[option]++; }));
@@ -708,8 +713,9 @@ export default async function handler(request, response) {
         await pool.query("DELETE FROM scheduling_profile_aliases WHERE alias = $1 AND user_id = $2", [slug, userId]);
         await pool.query("INSERT INTO scheduling_profile_aliases (alias,user_id) VALUES ($1,$2) ON CONFLICT (alias) DO NOTHING", [current.rows[0].slug, userId]);
       }
+      const bufferMinutes = normalizeBufferMinutes(body.bufferMinutes);
       const result = await pool.query(`INSERT INTO scheduling_profiles (user_id,slug,display_name,timezone,duration_minutes,buffer_minutes,availability,always_available,max_bookings_per_day,blackouts) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-        ON CONFLICT (user_id) DO UPDATE SET slug=EXCLUDED.slug,display_name=EXCLUDED.display_name,timezone=EXCLUDED.timezone,duration_minutes=EXCLUDED.duration_minutes,buffer_minutes=EXCLUDED.buffer_minutes,availability=EXCLUDED.availability,always_available=EXCLUDED.always_available,max_bookings_per_day=EXCLUDED.max_bookings_per_day,blackouts=EXCLUDED.blackouts,updated_at=NOW() RETURNING *`, [userId, slug, body.displayName.trim(), body.timezone, Math.max(15, Math.min(180, Number(body.durationMinutes || 30))), Math.max(0, Math.min(60, Number(body.bufferMinutes || 0))), JSON.stringify(availability), false, maxBookingsPerDay, JSON.stringify(blackouts)]);
+        ON CONFLICT (user_id) DO UPDATE SET slug=EXCLUDED.slug,display_name=EXCLUDED.display_name,timezone=EXCLUDED.timezone,duration_minutes=EXCLUDED.duration_minutes,buffer_minutes=EXCLUDED.buffer_minutes,availability=EXCLUDED.availability,always_available=EXCLUDED.always_available,max_bookings_per_day=EXCLUDED.max_bookings_per_day,blackouts=EXCLUDED.blackouts,updated_at=NOW() RETURNING *`, [userId, slug, body.displayName.trim(), body.timezone, Math.max(15, Math.min(180, Number(body.durationMinutes || 30))), bufferMinutes, JSON.stringify(availability), false, maxBookingsPerDay, JSON.stringify(blackouts)]);
       const row = result.rows[0];
       return response.status(200).json({ ...publicProfile(row), availability: row.availability, maxBookingsPerDay: row.max_bookings_per_day, blackouts: row.blackouts });
     }
