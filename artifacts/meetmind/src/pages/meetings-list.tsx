@@ -12,7 +12,7 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { motion, AnimatePresence } from 'framer-motion';
 
 export default function MeetingsList() {
-  const { data: meetings, isLoading } = useGetMeetings();
+  const { data: meetings, isLoading } = useGetMeetings({ query: { refetchInterval: 30_000, refetchIntervalInBackground: false } });
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<'upcoming' | 'past' | 'all'>('upcoming');
   const [selectedMeeting, setSelectedMeeting] = useState<Partial<Meeting> | undefined>(undefined);

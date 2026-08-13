@@ -14,14 +14,12 @@ import { AiUploadModal } from '@/components/ai-upload-modal';
 import { MeetingDetailModal } from '@/components/meeting-detail-modal';
 import { DayModal } from '@/components/day-modal';
 import { AddMeetingChoiceModal } from '@/components/add-meeting-choice-modal';
-import { useReminders } from '@/hooks/use-reminders';
 import { usePushNotifications } from '@/hooks/use-push-notifications';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 
 export default function Dashboard() {
-  const { data: meetings, isLoading, error } = useGetMeetings();
-  useReminders();
+  const { data: meetings, isLoading, error } = useGetMeetings({ query: { refetchInterval: 30_000, refetchIntervalInBackground: false } });
 
   const { state: pushState, subscribe, unsubscribe } = usePushNotifications();
 

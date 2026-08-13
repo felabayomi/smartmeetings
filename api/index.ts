@@ -36,6 +36,18 @@ function ensurePushTables() {
       UNIQUE (meeting_id, reminder_minutes, fire_at)
     );
     CREATE INDEX IF NOT EXISTS push_subscriptions_calendar_idx ON push_subscriptions(calendar_token);
+    CREATE TABLE IF NOT EXISTS user_notifications (
+      id BIGSERIAL PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      type TEXT NOT NULL,
+      title TEXT NOT NULL,
+      body TEXT NOT NULL,
+      meeting_id INTEGER,
+      dedupe_key TEXT UNIQUE NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      read_at TIMESTAMPTZ
+    );
+    CREATE INDEX IF NOT EXISTS user_notifications_user_created_idx ON user_notifications(user_id, created_at DESC);
   `);
   return pushReady;
 }
@@ -54,8 +66,11 @@ async function sendPushReminders() {
       const claimed = await pool.query(`INSERT INTO notification_log (meeting_id, reminder_minutes, fire_at)
         VALUES ($1,$2,$3) ON CONFLICT DO NOTHING RETURNING id`, [row.id, minutes, fireAt]);
       if (!claimed.rowCount) continue;
-      const subscriptions = await pool.query("SELECT * FROM push_subscriptions WHERE calendar_token = $1", [row.calendar_token]);
       const label = Number(minutes) >= 60 ? `${Math.round(Number(minutes) / 60)} hour${Number(minutes) >= 120 ? "s" : ""}` : `${minutes} minutes`;
+      await pool.query(`INSERT INTO user_notifications (user_id,type,title,body,meeting_id,dedupe_key)
+        VALUES ($1,'reminder',$2,$3,$4,$5) ON CONFLICT (dedupe_key) DO NOTHING`,
+        [row.calendar_token, `Upcoming: ${row.title}`, `Starts in ${label}`, row.id, `reminder:${row.id}:${minutes}:${fireAt.toISOString()}`]);
+      const subscriptions = await pool.query("SELECT * FROM push_subscriptions WHERE calendar_token = $1", [row.calendar_token]);
       const payload = JSON.stringify({ title: `Meeting in ${label}`, body: row.title, tag: `meeting-${row.id}-${minutes}`, data: { url: "/app" } });
       for (const subscription of subscriptions.rows) {
         try {
@@ -468,6 +483,7 @@ export default async function handler(request, response) {
     if (publicBooking && request.method === "POST") {
       const profile = await getProfileBySlug(decodeURIComponent(publicBooking[1]));
       if (!profile) return response.status(404).json({ error: "Booking page not found" });
+      await ensurePushTables();
       const { startTime, guestName, guestEmail, guestTimezone, notes } = request.body || {};
       if (!startTime || !guestName?.trim() || !guestEmail?.includes("@")) return response.status(400).json({ error: "Name, email, and a time are required" });
       const allowed = await availableSlots(profile, new Date(), 60);
@@ -493,6 +509,9 @@ export default async function handler(request, response) {
         const inserted = await client.query("INSERT INTO meetings (calendar_token,title,description,start_time,end_time,timezone,organizer,notes,color) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *", [profile.user_id, `Meeting with ${guestName.trim()}`, notes || `Booked by ${guestEmail}`, selected.startTime, selected.endTime, profile.timezone, guestName.trim(), `Guest: ${guestEmail}${guestTimezone ? ` • ${guestTimezone}` : ""}${notes ? `\n${notes}` : ""}`, "#10b981"]);
         const manageToken = randomUUID();
         await client.query("INSERT INTO bookings (id,owner_id,meeting_id,guest_name,guest_email,guest_timezone,notes,start_time,end_time,manage_token) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)", [randomUUID(), profile.user_id, inserted.rows[0].id, guestName.trim(), guestEmail.trim(), guestTimezone || null, notes || null, selected.startTime, selected.endTime, manageToken]);
+        await client.query(`INSERT INTO user_notifications (user_id,type,title,body,meeting_id,dedupe_key)
+          VALUES ($1,'booking',$2,$3,$4,$5) ON CONFLICT (dedupe_key) DO NOTHING`,
+          [profile.user_id, "New meeting booked", `${guestName.trim()} booked ${formatInTimeZone(selected.startTime, profile.timezone, "MMM d, yyyy 'at' h:mm a zzz")}`, inserted.rows[0].id, `booking:${inserted.rows[0].id}`]);
         await client.query("COMMIT");
         return response.status(201).json({ success: true, meeting: meeting(inserted.rows[0]), ownerTimezone: profile.timezone, manageToken });
       } catch (error) {
@@ -611,6 +630,21 @@ export default async function handler(request, response) {
       await ensurePushTables();
       const endpoint = request.body?.endpoint;
       if (endpoint) await pool.query("DELETE FROM push_subscriptions WHERE endpoint = $1 AND calendar_token = $2", [endpoint, userId]);
+      return response.status(200).json({ success: true });
+    }
+
+    if (path === "/notifications" && request.method === "GET") {
+      await ensurePushTables();
+      const result = await pool.query(`SELECT id,type,title,body,meeting_id,created_at,read_at
+        FROM user_notifications WHERE user_id = $1 ORDER BY created_at DESC LIMIT 50`, [userId]);
+      return response.status(200).json({
+        notifications: result.rows.map((row) => ({ id: String(row.id), type: row.type, title: row.title, body: row.body, meetingId: row.meeting_id, createdAt: row.created_at, readAt: row.read_at })),
+        unreadCount: result.rows.filter((row) => !row.read_at).length,
+      });
+    }
+    if (path === "/notifications/read" && request.method === "POST") {
+      await ensurePushTables();
+      await pool.query("UPDATE user_notifications SET read_at = COALESCE(read_at, NOW()) WHERE user_id = $1 AND read_at IS NULL", [userId]);
       return response.status(200).json({ success: true });
     }
 

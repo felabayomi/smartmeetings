@@ -7,6 +7,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { UserButton } from '@clerk/react';
 import { SiteFooter } from '@/components/site-footer';
 import { InstallAppButton } from '@/components/install-app-button';
+import { NotificationCenter } from '@/components/notification-center';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -35,6 +36,7 @@ export function Layout({ children }: LayoutProps) {
 
   return (
     <div className="min-h-screen bg-background flex flex-col md:flex-row font-sans">
+      <div className="fixed top-5 right-24 md:top-6 md:right-6 z-[60]"><NotificationCenter /></div>
       {/* Mobile Header */}
       <div className="md:hidden glass-panel sticky top-0 z-50 flex items-center justify-between p-4">
         <Logo className="w-14 h-14" />
