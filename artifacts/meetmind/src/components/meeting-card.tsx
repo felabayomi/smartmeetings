@@ -4,7 +4,7 @@ import { isPast, parseISO } from 'date-fns';
 import { MapPin, Clock, Video, User } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { motion } from 'framer-motion';
-import { formatTimeEST } from '@/lib/timezone';
+import { APP_TZ_LABEL, formatTimeEST } from '@/lib/timezone';
 
 interface MeetingCardProps {
   meeting: Meeting;
@@ -50,7 +50,7 @@ export function MeetingCard({ meeting, onClick, layoutId }: MeetingCardProps) {
         </h3>
         <div className="text-right flex flex-col items-end flex-shrink-0">
           <span className="font-semibold text-foreground">
-            {formatTimeEST(meeting.startTime)} <span className="text-[10px] text-muted-foreground font-normal">EST</span>
+            {formatTimeEST(meeting.startTime)} <span className="text-[10px] text-muted-foreground font-normal">{APP_TZ_LABEL}</span>
           </span>
           {endDate && (
             <span className="text-xs text-muted-foreground">

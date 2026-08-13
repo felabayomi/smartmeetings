@@ -2,7 +2,7 @@ import React from 'react';
 import { Meeting } from '@workspace/api-client-react/src/generated/api.schemas';
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { formatTimeEST, formatDateEST, estDayKey } from '@/lib/timezone';
+import { APP_TZ_LABEL, formatTimeEST, estDayKey } from '@/lib/timezone';
 import { parseISO, isPast } from 'date-fns';
 import { format } from 'date-fns';
 import { Plus, Clock, CalendarDays, ChevronRight } from 'lucide-react';
@@ -99,7 +99,7 @@ export function DayModal({ date, meetings, isOpen, onClose, onMeetingClick, onAd
                       <span className="text-xs font-medium" style={{ color }}>
                         {formatTimeEST(meeting.startTime, 'h:mm a')}
                         {endDate && ` – ${formatTimeEST(meeting.endTime!, 'h:mm a')}`}
-                        {' '}EST
+                        {' '}{APP_TZ_LABEL}
                       </span>
                     </div>
                     {meeting.organizer && (

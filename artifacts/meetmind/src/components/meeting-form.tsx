@@ -6,7 +6,7 @@ import { useCreateMeeting, useUpdateMeeting, useDeleteMeeting } from '@workspace
 import { Meeting } from '@workspace/api-client-react/src/generated/api.schemas';
 import { useQueryClient } from '@tanstack/react-query';
 import { cn } from '@/lib/utils';
-import { toDatetimeLocalEST, fromDatetimeLocalEST } from '@/lib/timezone';
+import { APP_TZ, APP_TZ_LABEL, toDatetimeLocalEST, fromDatetimeLocalEST } from '@/lib/timezone';
 import { 
   Calendar, Clock, Link2, MapPin, AlignLeft, User, Bell, Palette, Loader2, Trash2, Plus, X
 } from 'lucide-react';
@@ -134,6 +134,7 @@ export function MeetingForm({ initialData, onSuccess, onCancel, isAiExtracted, a
       ...values,
       startTime: toIso(values.startTime)!,
       endTime: toIso(values.endTime),
+      timezone: APP_TZ,
       // Only send slots that are visible; clear hidden ones
       reminderMinutes2: reminderCount >= 2 ? values.reminderMinutes2 : null,
       reminderMinutes3: reminderCount >= 3 ? values.reminderMinutes3 : null,
@@ -204,7 +205,7 @@ export function MeetingForm({ initialData, onSuccess, onCancel, isAiExtracted, a
                 name="startTime"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel className="text-muted-foreground flex items-center"><Calendar className="w-4 h-4 mr-2" /> Start Time</FormLabel>
+                    <FormLabel className="text-muted-foreground flex items-center"><Calendar className="w-4 h-4 mr-2" /> Start Time ({APP_TZ_LABEL})</FormLabel>
                     <FormControl>
                       <Input type="datetime-local" className="h-11 rounded-xl bg-background" {...field} />
                     </FormControl>

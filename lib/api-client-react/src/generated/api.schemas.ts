@@ -63,6 +63,8 @@ export interface ExtractMeetingBody {
   imageBase64: string;
   /** MIME type of the image (e.g. image/jpeg, image/png) */
   mimeType: string;
+  /** User IANA timezone used only when the image does not specify one */
+  userTimezone?: string;
 }
 
 export interface ExtractedMeeting {

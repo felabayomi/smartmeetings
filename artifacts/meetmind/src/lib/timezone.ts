@@ -1,7 +1,11 @@
 import { toZonedTime, formatInTimeZone, fromZonedTime } from "date-fns-tz";
 import { parseISO } from "date-fns";
 
-export const APP_TZ = "America/New_York";
+export const APP_TZ = typeof Intl !== "undefined"
+  ? Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"
+  : "UTC";
+
+export const APP_TZ_LABEL = formatInTimeZone(new Date(), APP_TZ, "zzz");
 
 /** Parse a UTC ISO string (or Date) and return a Date representing that moment in EST. */
 export function toEST(utcSource: string | Date): Date {

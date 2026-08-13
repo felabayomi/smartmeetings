@@ -2,7 +2,7 @@ import React from 'react';
 import { Meeting } from '@workspace/api-client-react/src/generated/api.schemas';
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { formatTimeEST, formatDateEST } from '@/lib/timezone';
+import { APP_TZ_LABEL, formatTimeEST, formatDateEST } from '@/lib/timezone';
 import { parseISO, isPast } from 'date-fns';
 import {
   Calendar, Clock, MapPin, Link2, User, AlignLeft, Bell, Pencil, ExternalLink, X
@@ -82,7 +82,7 @@ export function MeetingDetailModal({ meeting, isOpen, onClose, onEdit }: Meeting
               <DetailRow icon={<Clock className="w-4 h-4" />} color={color}>
                 <span className="font-medium text-foreground text-sm">
                   {startLabel}{endLabel ? ` – ${endLabel}` : ''}
-                  <span className="text-xs text-muted-foreground font-normal ml-1">EST</span>
+                  <span className="text-xs text-muted-foreground font-normal ml-1">{APP_TZ_LABEL}</span>
                 </span>
               </DetailRow>
 

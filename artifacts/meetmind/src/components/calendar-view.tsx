@@ -10,7 +10,7 @@ import { Button } from '@/components/ui/button';
 import { Meeting } from '@workspace/api-client-react/src/generated/api.schemas';
 import { cn } from '@/lib/utils';
 import { motion, AnimatePresence } from 'framer-motion';
-import { APP_TZ, estDayKey, formatTimeEST } from '@/lib/timezone';
+import { APP_TZ, APP_TZ_LABEL, estDayKey, formatTimeEST } from '@/lib/timezone';
 
 interface CalendarViewProps {
   meetings: Meeting[];
@@ -58,7 +58,7 @@ export function CalendarView({ meetings, onMeetingClick, onDayClick }: CalendarV
           <h2 className="text-2xl font-display font-bold text-foreground">
             {format(currentDate, 'MMMM yyyy')}
           </h2>
-          <p className="text-xs text-muted-foreground mt-0.5">All times in Eastern Time (EST)</p>
+          <p className="text-xs text-muted-foreground mt-0.5">All times in {APP_TZ} ({APP_TZ_LABEL})</p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" size="icon" onClick={prevMonth} className="rounded-full w-10 h-10 border-border bg-card hover:bg-muted">

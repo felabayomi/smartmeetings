@@ -1,4 +1,5 @@
 import React, { useState, useRef } from 'react';
+import { APP_TZ } from '@/lib/timezone';
 import { useExtractMeetingFromImage } from '@workspace/api-client-react';
 import { Upload, Loader2, Sparkles } from 'lucide-react';
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
@@ -68,7 +69,8 @@ export function AiUploadModal({ isOpen, onClose, onExtracted }: AiUploadModalPro
       extractMutation.mutate({
         data: {
           imageBase64: base64,
-          mimeType: file.type
+          mimeType: file.type,
+          userTimezone: APP_TZ,
         }
       });
     } catch (e) {

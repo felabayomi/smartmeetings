@@ -389,7 +389,7 @@ async function extractMeeting(request, response) {
   const baseUrl = (process.env.AI_INTEGRATIONS_OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, "");
   if (!apiKey) return response.status(503).json({ error: "AI scanning is not configured" });
 
-  const { imageBase64, mimeType } = request.body || {};
+  const { imageBase64, mimeType, userTimezone } = request.body || {};
   if (typeof imageBase64 !== "string" || !allowedImageTypes.has(mimeType)) {
     return response.status(400).json({ error: "Upload a PNG, JPEG, WebP, or GIF image" });
   }
@@ -412,7 +412,7 @@ async function extractMeeting(request, response) {
         content: [
           {
             type: "input_text",
-            text: `Extract EVERY distinct meeting, appointment, or schedule row visible in this image, in top-to-bottom order. Return one array item per distinct event; never merge separate rows. Identify the named person as organizer when appropriate. If no event title is shown, use "Meeting with [person's name]" rather than inventing a generic title. Resolve relative dates using today's date, ${new Date().toISOString().slice(0, 10)}. Return startTime and endTime as ISO 8601 timestamps with the correct UTC offset. Use an IANA timezone name when it can be determined. When an end time, location, URL, or other value is not visible, return null and do not guess. Preserve explicit time-zone equivalences from the image.`,
+            text: `Extract EVERY distinct meeting, appointment, or schedule row visible in this image, in top-to-bottom order. Return one array item per distinct event; never merge separate rows. Identify the named person as organizer when appropriate. If no event title is shown, use "Meeting with [person's name]" rather than inventing a generic title. Resolve relative dates using today's date, ${new Date().toISOString().slice(0, 10)}. Return startTime and endTime as ISO 8601 timestamps with the correct UTC offset. Preserve any explicit timezone or timezone equivalence shown in the image. Only when the image gives no timezone, interpret its wall-clock time in ${validTimezone(userTimezone) ? userTimezone : "UTC"}. Return an IANA timezone name when it can be determined. When an end time, location, URL, or other value is not visible, return null and do not guess.`,
           },
           {
             type: "input_image",
