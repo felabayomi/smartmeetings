@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { getCalendarToken } from "@/lib/calendar-token";
+import { useAuth } from "@clerk/react";
 
 const BASE_URL = import.meta.env.BASE_URL || "/";
 const API_BASE = BASE_URL.endsWith("/") ? BASE_URL.slice(0, -1) : BASE_URL;
@@ -23,7 +23,18 @@ function urlBase64ToUint8Array(base64String: string): Uint8Array {
 export type PushState = "unsupported" | "denied" | "prompt" | "subscribed" | "loading";
 
 export function usePushNotifications() {
+  const { getToken } = useAuth();
   const [state, setState] = useState<PushState>("loading");
+
+  const saveSubscription = useCallback(async (sub: PushSubscription) => {
+    const token = await getToken();
+    const response = await fetch(`${API_BASE}/api/push/subscribe`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify(sub.toJSON()),
+    });
+    if (!response.ok) throw new Error((await response.json().catch(() => null))?.error || "Failed to save notification subscription");
+  }, [getToken]);
 
   useEffect(() => {
     let cancelled = false;
@@ -41,6 +52,7 @@ export function usePushNotifications() {
         const sub = await reg.pushManager.getSubscription();
         if (cancelled) return;
         if (sub) {
+          await saveSubscription(sub);
           setState("subscribed");
           return;
         }
@@ -67,7 +79,24 @@ export function usePushNotifications() {
       document.removeEventListener("visibilitychange", refreshAfterResume);
       window.removeEventListener("pageshow", refreshAfterResume);
     };
-  }, []);
+  }, [saveSubscription]);
+
+  useEffect(() => {
+    if (state !== "subscribed") return;
+    let cancelled = false;
+    const runReminders = async () => {
+      if (document.visibilityState !== "visible" || cancelled) return;
+      try {
+        const token = await getToken();
+        await fetch(`${API_BASE}/api/push/send-reminders`, { headers: { Authorization: `Bearer ${token}` } });
+      } catch (error) {
+        console.warn("Reminder check failed:", error);
+      }
+    };
+    void runReminders();
+    const interval = window.setInterval(runReminders, 60_000);
+    return () => { cancelled = true; window.clearInterval(interval); };
+  }, [getToken, state]);
 
   const subscribe = useCallback(async () => {
     setState("loading");
@@ -83,19 +112,13 @@ export function usePushNotifications() {
         userVisibleOnly: true,
         applicationServerKey: urlBase64ToUint8Array(vapidKey),
       });
-      const calendarToken = getCalendarToken();
-      const subJson = sub.toJSON();
-      await fetch(`${API_BASE}/api/push/subscribe`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...subJson, calendarToken }),
-      });
+      await saveSubscription(sub);
       setState("subscribed");
     } catch (err) {
       console.error("Push subscribe error:", err);
       setState(Notification.permission === "granted" ? "unsupported" : "prompt");
     }
-  }, []);
+  }, [saveSubscription]);
 
   const unsubscribe = useCallback(async () => {
     setState("loading");
@@ -103,11 +126,13 @@ export function usePushNotifications() {
       const reg = await navigator.serviceWorker.ready;
       const sub = await reg.pushManager.getSubscription();
       if (sub) {
-        await fetch(`${API_BASE}/api/push/unsubscribe`, {
+        const token = await getToken();
+        const response = await fetch(`${API_BASE}/api/push/unsubscribe`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
           body: JSON.stringify({ endpoint: sub.endpoint }),
         });
+        if (!response.ok) throw new Error("Failed to remove notification subscription");
         await sub.unsubscribe();
       }
       setState("prompt");
@@ -115,7 +140,7 @@ export function usePushNotifications() {
       console.error("Push unsubscribe error:", err);
       setState("subscribed");
     }
-  }, []);
+  }, [getToken]);
 
   return { state, subscribe, unsubscribe };
 }

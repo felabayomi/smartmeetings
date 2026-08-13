@@ -2,6 +2,7 @@
 import pg from "pg";
 import { createClerkClient } from "@clerk/backend";
 import { randomUUID } from "node:crypto";
+import webPush from "web-push";
 import { addDays, addHours, addMinutes } from "date-fns";
 import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 
@@ -12,6 +13,63 @@ const clerk = createClerkClient({
 });
 const allowedImageTypes = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
 let schedulingReady;
+let pushReady;
+
+const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || "BM4A8xrDgKpyDmGEpDZlROCwsijp8uvy4a-EnW2zNDdCqE3FF0Idg67CwNJq2lPLsu0xl6jNBrPCYLDaylc5Ypo";
+const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || "YzukqYDQpFl0ll7euuU3HnW0Of_0a-JRl43r_ZRqQCo";
+webPush.setVapidDetails("mailto:notifications@meetminder.app", VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
+
+function ensurePushTables() {
+  if (!pushReady) pushReady = pool.query(`
+    CREATE TABLE IF NOT EXISTS push_subscriptions (
+      endpoint TEXT PRIMARY KEY,
+      calendar_token TEXT NOT NULL,
+      p256dh TEXT NOT NULL,
+      auth TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS notification_log (
+      id BIGSERIAL PRIMARY KEY,
+      meeting_id INTEGER NOT NULL,
+      reminder_minutes INTEGER NOT NULL,
+      fire_at TIMESTAMPTZ NOT NULL,
+      UNIQUE (meeting_id, reminder_minutes, fire_at)
+    );
+    CREATE INDEX IF NOT EXISTS push_subscriptions_calendar_idx ON push_subscriptions(calendar_token);
+  `);
+  return pushReady;
+}
+
+async function sendPushReminders() {
+  await ensurePushTables();
+  const now = new Date();
+  const windowStart = addMinutes(now, -5);
+  const meetings = await pool.query(`SELECT * FROM meetings WHERE start_time > $1 AND start_time < $2`, [windowStart, addDays(now, 2)]);
+  let sent = 0;
+  for (const row of meetings.rows) {
+    const reminders = [row.reminder_minutes ?? 15, row.reminder_minutes_2, row.reminder_minutes_3].filter((value) => Number.isFinite(value));
+    for (const minutes of reminders) {
+      const fireAt = addMinutes(new Date(row.start_time), -Number(minutes));
+      if (fireAt < windowStart || fireAt > now) continue;
+      const claimed = await pool.query(`INSERT INTO notification_log (meeting_id, reminder_minutes, fire_at)
+        VALUES ($1,$2,$3) ON CONFLICT DO NOTHING RETURNING id`, [row.id, minutes, fireAt]);
+      if (!claimed.rowCount) continue;
+      const subscriptions = await pool.query("SELECT * FROM push_subscriptions WHERE calendar_token = $1", [row.calendar_token]);
+      const label = Number(minutes) >= 60 ? `${Math.round(Number(minutes) / 60)} hour${Number(minutes) >= 120 ? "s" : ""}` : `${minutes} minutes`;
+      const payload = JSON.stringify({ title: `Meeting in ${label}`, body: row.title, tag: `meeting-${row.id}-${minutes}`, data: { url: "/app" } });
+      for (const subscription of subscriptions.rows) {
+        try {
+          await webPush.sendNotification({ endpoint: subscription.endpoint, keys: { p256dh: subscription.p256dh, auth: subscription.auth } }, payload);
+          sent++;
+        } catch (error) {
+          if (error?.statusCode === 404 || error?.statusCode === 410) await pool.query("DELETE FROM push_subscriptions WHERE endpoint = $1", [subscription.endpoint]);
+          else console.error("Push delivery failed", { meetingId: row.id, statusCode: error?.statusCode });
+        }
+      }
+    }
+  }
+  return sent;
+}
 
 const defaultAvailability = [
   { day: 1, enabled: true, start: "09:00", end: "17:00" },
@@ -384,6 +442,15 @@ export default async function handler(request, response) {
 
   try {
     if (path === "/healthz") return response.status(200).json({ status: "ok" });
+    if (path === "/push/vapid-key" && request.method === "GET") return response.status(200).json({ publicKey: VAPID_PUBLIC_KEY });
+    if (path === "/push/send-reminders" && request.method === "GET") {
+      const cronSecret = process.env.CRON_SECRET;
+      const isCron = Boolean(cronSecret && request.headers.authorization === `Bearer ${cronSecret}`);
+      if (!isCron && !await authenticatedUserId(request)) return response.status(401).json({ error: "Unauthorized" });
+      const sent = await sendPushReminders();
+      console.log("Push reminder run completed", { sent });
+      return response.status(200).json({ success: true, sent });
+    }
 
     const publicBooking = path.match(/^\/booking\/([^/]+)$/);
     const publicSlots = path.match(/^\/booking\/([^/]+)\/slots$/);
@@ -530,6 +597,22 @@ export default async function handler(request, response) {
 
     const userId = await authenticatedUserId(request);
     if (!userId) return response.status(401).json({ error: "Sign in required" });
+
+    if (path === "/push/subscribe" && request.method === "POST") {
+      await ensurePushTables();
+      const { endpoint, keys } = request.body || {};
+      if (!endpoint || !keys?.p256dh || !keys?.auth) return response.status(400).json({ error: "Invalid push subscription" });
+      await pool.query(`INSERT INTO push_subscriptions (endpoint, calendar_token, p256dh, auth)
+        VALUES ($1,$2,$3,$4) ON CONFLICT (endpoint) DO UPDATE SET calendar_token=EXCLUDED.calendar_token,p256dh=EXCLUDED.p256dh,auth=EXCLUDED.auth`,
+        [endpoint, userId, keys.p256dh, keys.auth]);
+      return response.status(200).json({ success: true });
+    }
+    if (path === "/push/unsubscribe" && request.method === "POST") {
+      await ensurePushTables();
+      const endpoint = request.body?.endpoint;
+      if (endpoint) await pool.query("DELETE FROM push_subscriptions WHERE endpoint = $1 AND calendar_token = $2", [endpoint, userId]);
+      return response.status(200).json({ success: true });
+    }
 
     if (path === "/guest-bookings" && request.method === "GET") {
       await ensureSchedulingTables();
