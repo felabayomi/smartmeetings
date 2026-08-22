@@ -1,31 +1,58 @@
-import React, { useState } from 'react';
-import { useGetMeetings } from '@workspace/api-client-react';
-import { Meeting } from '@workspace/api-client-react/src/generated/api.schemas';
-import { compareAsc, parseISO, format } from 'date-fns';
-import { isTodayEST, fromDatetimeLocalEST } from '@/lib/timezone';
-import { Plus, Camera, Loader2, CalendarX, BellRing, BellOff, Bell } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
-import { Layout } from '@/components/layout';
-import { MeetingCard } from '@/components/meeting-card';
-import { CalendarView } from '@/components/calendar-view';
-import { MeetingForm } from '@/components/meeting-form';
-import { AiUploadModal } from '@/components/ai-upload-modal';
-import { MeetingDetailModal } from '@/components/meeting-detail-modal';
-import { DayModal } from '@/components/day-modal';
-import { AddMeetingChoiceModal } from '@/components/add-meeting-choice-modal';
-import { usePushNotifications } from '@/hooks/use-push-notifications';
-import { motion, AnimatePresence } from 'framer-motion';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import React, { useState } from "react";
+import { useGetMeetings } from "@workspace/api-client-react";
+import { Meeting } from "@workspace/api-client-react/src/generated/api.schemas";
+import { compareAsc, parseISO, format } from "date-fns";
+import { isTodayEST, fromDatetimeLocalEST } from "@/lib/timezone";
+import {
+  Plus,
+  Camera,
+  Loader2,
+  CalendarX,
+  BellRing,
+  BellOff,
+  Bell,
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
+import { Layout } from "@/components/layout";
+import { MeetingCard } from "@/components/meeting-card";
+import { CalendarView } from "@/components/calendar-view";
+import { MeetingForm } from "@/components/meeting-form";
+import { AiUploadModal } from "@/components/ai-upload-modal";
+import { MeetingDetailModal } from "@/components/meeting-detail-modal";
+import { DayModal } from "@/components/day-modal";
+import { AddMeetingChoiceModal } from "@/components/add-meeting-choice-modal";
+import { usePushNotifications } from "@/hooks/use-push-notifications";
+import { motion, AnimatePresence } from "framer-motion";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { useAuth } from "@clerk/react";
 
 export default function Dashboard() {
-  const { data: meetings, isLoading, error } = useGetMeetings({ query: { refetchInterval: 30_000, refetchIntervalInBackground: false } });
+  const { getToken } = useAuth();
+  const {
+    data: meetings,
+    isLoading,
+    error,
+  } = useGetMeetings({
+    query: { refetchInterval: 30_000, refetchIntervalInBackground: false },
+  });
 
   const { state: pushState, subscribe, unsubscribe } = usePushNotifications();
 
   // ── Edit / create form ──────────────────────────────────────────────────────
   const [formOpen, setFormOpen] = useState(false);
-  const [selectedMeeting, setSelectedMeeting] = useState<Partial<Meeting> | undefined>(undefined);
+  const [selectedMeeting, setSelectedMeeting] = useState<
+    Partial<Meeting> | undefined
+  >(undefined);
   const [isAiExtracted, setIsAiExtracted] = useState(false);
   const [aiMeetingQueue, setAiMeetingQueue] = useState<Partial<Meeting>[]>([]);
   const [aiMeetingTotal, setAiMeetingTotal] = useState(0);
@@ -73,7 +100,7 @@ export default function Dashboard() {
     // then fromDatetimeLocalEST converts "9:00 AM on that date in EST" to a real UTC ISO.
     let startTime: string | undefined;
     if (pendingDate) {
-      const dateStr = format(pendingDate, 'yyyy-MM-dd');
+      const dateStr = format(pendingDate, "yyyy-MM-dd");
       startTime = fromDatetimeLocalEST(`${dateStr}T09:00`) ?? undefined;
     }
     setSelectedMeeting(startTime ? { startTime } : undefined);
@@ -123,7 +150,9 @@ export default function Dashboard() {
     const extractedMeetings = Array.isArray(extractedData?.meetings)
       ? extractedData.meetings
       : [extractedData];
-    const meetingsToReview = extractedMeetings.map((item: Partial<Meeting>) => ({ ...item, color: '#8b5cf6' }));
+    const meetingsToReview = extractedMeetings.map(
+      (item: Partial<Meeting>) => ({ ...item, color: "#8b5cf6" }),
+    );
     setSelectedMeeting(meetingsToReview[0]);
     setAiMeetingQueue(meetingsToReview.slice(1));
     setAiMeetingTotal(meetingsToReview.length);
@@ -147,6 +176,21 @@ export default function Dashboard() {
   };
 
   const cancelMeetingForm = () => {
+    const sourceScanId =
+      (selectedMeeting as any)?.sourceScanId ||
+      (aiMeetingQueue[0] as any)?.sourceScanId;
+    if (isAiExtracted && sourceScanId)
+      void (async () => {
+        try {
+          const token = await getToken();
+          await fetch(`/api/scan-sources/${encodeURIComponent(sourceScanId)}`, {
+            method: "DELETE",
+            headers: { Authorization: `Bearer ${token}` },
+          });
+        } catch (error) {
+          console.warn("Could not remove unused scan source", error);
+        }
+      })();
     setFormOpen(false);
     setIsAiExtracted(false);
     setAiMeetingQueue([]);
@@ -156,43 +200,60 @@ export default function Dashboard() {
   // ── Data ────────────────────────────────────────────────────────────────────
   const todayUpcoming = meetings
     ? meetings
-        .filter(m => isTodayEST(m.startTime))
-        .sort((a, b) => compareAsc(parseISO(a.startTime), parseISO(b.startTime)))
+        .filter((m) => isTodayEST(m.startTime))
+        .sort((a, b) =>
+          compareAsc(parseISO(a.startTime), parseISO(b.startTime)),
+        )
     : [];
 
   // ── Push notification button ────────────────────────────────────────────────
   const pushButton = () => {
     if (pushState === "unsupported") return null;
-    if (pushState === "loading") return (
-      <Button variant="outline" disabled className="rounded-xl h-12 px-4 border-border">
-        <Loader2 className="w-4 h-4 animate-spin" />
-      </Button>
-    );
-    if (pushState === "denied") return (
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button variant="outline" disabled className="rounded-xl h-12 px-4 border-destructive/30 text-destructive/60">
-            <BellOff className="w-4 h-4 mr-2" /> Blocked
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>Notifications blocked in browser settings</TooltipContent>
-      </Tooltip>
-    );
-    if (pushState === "subscribed") return (
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            variant="outline"
-            onClick={unsubscribe}
-            className="rounded-xl h-12 px-4 border-emerald-500/30 text-emerald-600 hover:bg-emerald-50 hover:text-emerald-700 dark:hover:bg-emerald-950/30"
-          >
-            <BellRing className="w-4 h-4 mr-2" />
-            Alerts On
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>Push alerts active — click to turn off</TooltipContent>
-      </Tooltip>
-    );
+    if (pushState === "loading")
+      return (
+        <Button
+          variant="outline"
+          disabled
+          className="rounded-xl h-12 px-4 border-border"
+        >
+          <Loader2 className="w-4 h-4 animate-spin" />
+        </Button>
+      );
+    if (pushState === "denied")
+      return (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="outline"
+              disabled
+              className="rounded-xl h-12 px-4 border-destructive/30 text-destructive/60"
+            >
+              <BellOff className="w-4 h-4 mr-2" /> Blocked
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>
+            Notifications blocked in browser settings
+          </TooltipContent>
+        </Tooltip>
+      );
+    if (pushState === "subscribed")
+      return (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="outline"
+              onClick={unsubscribe}
+              className="rounded-xl h-12 px-4 border-emerald-500/30 text-emerald-600 hover:bg-emerald-50 hover:text-emerald-700 dark:hover:bg-emerald-950/30"
+            >
+              <BellRing className="w-4 h-4 mr-2" />
+              Alerts On
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>
+            Push alerts active — click to turn off
+          </TooltipContent>
+        </Tooltip>
+      );
     return (
       <Tooltip>
         <TooltipTrigger asChild>
@@ -205,7 +266,9 @@ export default function Dashboard() {
             Enable Alerts
           </Button>
         </TooltipTrigger>
-        <TooltipContent>Get push alerts even when the app is closed</TooltipContent>
+        <TooltipContent>
+          Get push alerts even when the app is closed
+        </TooltipContent>
       </Tooltip>
     );
   };
@@ -213,12 +276,15 @@ export default function Dashboard() {
   return (
     <Layout>
       <div className="space-y-8 pb-20">
-
         {/* Header */}
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
           <div>
-            <h1 className="text-4xl font-display font-bold text-foreground">Welcome back</h1>
-            <p className="text-muted-foreground text-lg mt-1">Here's your schedule for today.</p>
+            <h1 className="text-4xl font-display font-bold text-foreground">
+              Welcome back
+            </h1>
+            <p className="text-muted-foreground text-lg mt-1">
+              Here's your schedule for today.
+            </p>
           </div>
           <div className="flex gap-3 w-full sm:w-auto flex-wrap">
             {pushButton()}
@@ -253,10 +319,19 @@ export default function Dashboard() {
                 <Bell className="w-5 h-5 text-primary" />
               </div>
               <div className="flex-1 min-w-0">
-                <p className="font-semibold text-foreground text-sm">Never miss a meeting</p>
-                <p className="text-muted-foreground text-sm">Enable push alerts to get notified even when MeetMind is closed.</p>
+                <p className="font-semibold text-foreground text-sm">
+                  Never miss a meeting
+                </p>
+                <p className="text-muted-foreground text-sm">
+                  Enable push alerts to get notified even when MeetMind is
+                  closed.
+                </p>
               </div>
-              <Button size="sm" onClick={subscribe} className="flex-shrink-0 rounded-xl bg-primary text-primary-foreground hover:bg-primary/90 font-semibold">
+              <Button
+                size="sm"
+                onClick={subscribe}
+                className="flex-shrink-0 rounded-xl bg-primary text-primary-foreground hover:bg-primary/90 font-semibold"
+              >
                 Enable
               </Button>
             </motion.div>
@@ -266,19 +341,32 @@ export default function Dashboard() {
         {/* Today's meetings */}
         {isLoading ? (
           <div className="flex space-x-4 overflow-x-auto pb-4">
-            {[1, 2, 3].map(i => (
-              <div key={i} className="min-w-[300px] h-32 rounded-2xl bg-muted/50 animate-pulse border border-border" />
+            {[1, 2, 3].map((i) => (
+              <div
+                key={i}
+                className="min-w-[300px] h-32 rounded-2xl bg-muted/50 animate-pulse border border-border"
+              />
             ))}
           </div>
         ) : todayUpcoming.length > 0 ? (
           <div className="space-y-3">
             <h2 className="text-xl font-display font-bold text-foreground flex items-center">
-              Today <span className="ml-3 px-2 py-0.5 rounded-full bg-primary/10 text-primary text-xs font-bold">{todayUpcoming.length} {todayUpcoming.length === 1 ? 'meeting' : 'meetings'}</span>
+              Today{" "}
+              <span className="ml-3 px-2 py-0.5 rounded-full bg-primary/10 text-primary text-xs font-bold">
+                {todayUpcoming.length}{" "}
+                {todayUpcoming.length === 1 ? "meeting" : "meetings"}
+              </span>
             </h2>
             <div className="flex space-x-4 overflow-x-auto pb-6 hide-scrollbar snap-x">
-              {todayUpcoming.map(meeting => (
-                <div key={meeting.id} className="min-w-[300px] w-[300px] sm:min-w-[350px] snap-start">
-                  <MeetingCard meeting={meeting} onClick={handleMeetingCardClick} />
+              {todayUpcoming.map((meeting) => (
+                <div
+                  key={meeting.id}
+                  className="min-w-[300px] w-[300px] sm:min-w-[350px] snap-start"
+                >
+                  <MeetingCard
+                    meeting={meeting}
+                    onClick={handleMeetingCardClick}
+                  />
                 </div>
               ))}
             </div>
@@ -288,8 +376,13 @@ export default function Dashboard() {
             <div className="w-16 h-16 rounded-full bg-muted/50 flex items-center justify-center mb-4">
               <CalendarX className="w-8 h-8 text-muted-foreground" />
             </div>
-            <h3 className="font-display font-bold text-lg text-foreground">No meetings today</h3>
-            <p className="text-muted-foreground mt-1 max-w-sm">You have a clear schedule. Time to focus on deep work or take a break!</p>
+            <h3 className="font-display font-bold text-lg text-foreground">
+              No meetings today
+            </h3>
+            <p className="text-muted-foreground mt-1 max-w-sm">
+              You have a clear schedule. Time to focus on deep work or take a
+              break!
+            </p>
           </div>
         )}
 
@@ -302,7 +395,11 @@ export default function Dashboard() {
               Error loading meetings. Please try again.
             </div>
           ) : (
-            <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1, duration: 0.4 }}>
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.1, duration: 0.4 }}
+            >
               <CalendarView
                 meetings={meetings || []}
                 onMeetingClick={handleCalendarMeetingClick}
@@ -352,13 +449,22 @@ export default function Dashboard() {
       <Dialog open={formOpen} onOpenChange={setFormOpen}>
         <DialogContent className="sm:max-w-2xl p-0 overflow-hidden bg-transparent border-none shadow-none">
           <DialogTitle className="sr-only">Meeting Details</DialogTitle>
-          <DialogDescription className="sr-only">Create or edit a meeting.</DialogDescription>
+          <DialogDescription className="sr-only">
+            Create or edit a meeting.
+          </DialogDescription>
           {formOpen && (
             <MeetingForm
               key={aiReviewKey}
               initialData={selectedMeeting}
               isAiExtracted={isAiExtracted}
-              aiReviewProgress={isAiExtracted ? { current: aiMeetingTotal - aiMeetingQueue.length, total: aiMeetingTotal } : undefined}
+              aiReviewProgress={
+                isAiExtracted
+                  ? {
+                      current: aiMeetingTotal - aiMeetingQueue.length,
+                      total: aiMeetingTotal,
+                    }
+                  : undefined
+              }
               onSuccess={finishMeetingForm}
               onCancel={cancelMeetingForm}
             />

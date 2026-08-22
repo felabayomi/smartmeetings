@@ -20,21 +20,36 @@ function urlBase64ToUint8Array(base64String: string): Uint8Array {
   return output;
 }
 
-export type PushState = "unsupported" | "denied" | "prompt" | "subscribed" | "loading";
+export type PushState =
+  | "unsupported"
+  | "denied"
+  | "prompt"
+  | "subscribed"
+  | "loading";
 
 export function usePushNotifications() {
   const { getToken } = useAuth();
   const [state, setState] = useState<PushState>("loading");
 
-  const saveSubscription = useCallback(async (sub: PushSubscription) => {
-    const token = await getToken();
-    const response = await fetch(`${API_BASE}/api/push/subscribe`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify(sub.toJSON()),
-    });
-    if (!response.ok) throw new Error((await response.json().catch(() => null))?.error || "Failed to save notification subscription");
-  }, [getToken]);
+  const saveSubscription = useCallback(
+    async (sub: PushSubscription) => {
+      const token = await getToken();
+      const response = await fetch(`${API_BASE}/api/push/subscribe`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(sub.toJSON()),
+      });
+      if (!response.ok)
+        throw new Error(
+          (await response.json().catch(() => null))?.error ||
+            "Failed to save notification subscription",
+        );
+    },
+    [getToken],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -88,14 +103,20 @@ export function usePushNotifications() {
       if (document.visibilityState !== "visible" || cancelled) return;
       try {
         const token = await getToken();
-        await fetch(`${API_BASE}/api/push/send-reminders`, { headers: { Authorization: `Bearer ${token}` } });
+        const response = await fetch(`${API_BASE}/api/push/send-reminders`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!response.ok) throw new Error("Reminder service is unavailable");
       } catch (error) {
         console.warn("Reminder check failed:", error);
       }
     };
     void runReminders();
     const interval = window.setInterval(runReminders, 60_000);
-    return () => { cancelled = true; window.clearInterval(interval); };
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
   }, [getToken, state]);
 
   const subscribe = useCallback(async () => {
@@ -116,7 +137,9 @@ export function usePushNotifications() {
       setState("subscribed");
     } catch (err) {
       console.error("Push subscribe error:", err);
-      setState(Notification.permission === "granted" ? "unsupported" : "prompt");
+      setState(
+        Notification.permission === "granted" ? "unsupported" : "prompt",
+      );
     }
   }, [saveSubscription]);
 
@@ -129,10 +152,14 @@ export function usePushNotifications() {
         const token = await getToken();
         const response = await fetch(`${API_BASE}/api/push/unsubscribe`, {
           method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
           body: JSON.stringify({ endpoint: sub.endpoint }),
         });
-        if (!response.ok) throw new Error("Failed to remove notification subscription");
+        if (!response.ok)
+          throw new Error("Failed to remove notification subscription");
         await sub.unsubscribe();
       }
       setState("prompt");

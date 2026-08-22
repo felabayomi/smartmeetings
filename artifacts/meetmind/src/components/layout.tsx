@@ -31,7 +31,7 @@ export function Layout({ children }: LayoutProps) {
     { path: '/app', label: 'Calendar', icon: CalendarIcon },
     { path: '/app/list', label: 'All Meetings', icon: List },
     { path: '/app/scheduling', label: 'Scheduling', icon: CalendarClock },
-    { path: '/app/my-bookings', label: 'My Bookings', icon: CalendarCheck2 },
+    { path: '/app/my-bookings', label: 'Bookings', icon: CalendarCheck2 },
   ];
 
   return (
