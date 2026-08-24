@@ -12,6 +12,7 @@ import { useToast } from "@/hooks/use-toast";
 type Window = { day: number; enabled: boolean; allDay?: boolean; start: string; end: string };
 type Blackout = { id: string; date: string; allDay: boolean; start: string; end: string };
 type Profile = { slug: string; displayName: string; timezone: string; durationMinutes: number; bufferMinutes: number; availability: Window[]; maxBookingsPerDay: number | null; blackouts: Blackout[] };
+type ProfileSave = Profile;
 type Poll = { id: string; slug: string; title: string; timezone: string; options: string[]; status: string; counts: Record<string, number>; responseCount: number; finalStart?: string };
 const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const defaults: Window[] = [1,2,3,4,5,6,0].map(day => ({ day, enabled: day > 0 && day < 6, allDay:false, start: "09:00", end: "17:00" }));
@@ -47,9 +48,23 @@ export default function Scheduling() {
   }, [existing, hydrated]);
 
   const saveProfile = useMutation({
-    mutationFn:(overrides: { blackouts?: Blackout[] }) => customFetch<Profile>("/api/scheduling/profile", { method:"PUT", responseType:"json", body:JSON.stringify({ displayName, slug:bookingSlug, timezone, durationMinutes:duration, bufferMinutes:buffer, availability, maxBookingsPerDay, blackouts:overrides.blackouts ?? blackouts }) }),
-    onSuccess:(data) => { setBookingSlug(data.slug); setBuffer(data.bufferMinutes); setBlackouts(data.blackouts || []); queryClient.setQueryData(["scheduling-profile"], data); toast({title:"Booking page saved",description:`Your availability is live with a ${data.bufferMinutes}-minute buffer around calendar events.`}); },
+    // Profile writes include every scheduling field. Keep them in user-action
+    // order so a slower, older request cannot overwrite newer weekly hours.
+    scope:{id:"scheduling-profile-save"},
+    mutationFn:(profile: ProfileSave) => customFetch<Profile>("/api/scheduling/profile", { method:"PUT", responseType:"json", body:JSON.stringify(profile) }),
+    onSuccess:(data) => {
+      setDisplayName(data.displayName); setBookingSlug(data.slug); setTimezone(data.timezone); setDuration(data.durationMinutes); setBuffer(data.bufferMinutes);
+      setAvailability(data.availability.map(item=>({...item,allDay:Boolean(item.allDay)}))); setMaxBookingsPerDay(data.maxBookingsPerDay ?? null); setBlackouts(data.blackouts || []);
+      queryClient.setQueryData(["scheduling-profile"], data);
+      toast({title:"Booking page saved",description:`Your weekly availability and ${data.bufferMinutes}-minute calendar buffer were saved.`});
+    },
     onError:(error:Error) => toast({variant:"destructive",title:"Could not save",description:error.message}),
+  });
+
+  const save = (overrides: { blackouts?: Blackout[] } = {}) => saveProfile.mutate({
+    displayName, slug:bookingSlug, timezone, durationMinutes:duration, bufferMinutes:buffer,
+    availability:availability.map(item=>({...item})), maxBookingsPerDay,
+    blackouts:(overrides.blackouts ?? blackouts).map(item=>({...item})),
   });
 
   const bookingUrl = existing ? `${window.location.origin}/book/${existing.slug}` : "";
@@ -61,7 +76,7 @@ export default function Scheduling() {
     }
     const next = [...blackouts, { id: crypto.randomUUID(), date:blackoutDate, allDay:blackoutAllDay, start:blackoutAllDay?"00:00":blackoutStart, end:blackoutAllDay?"24:00":blackoutEnd }].sort((a,b) => a.date.localeCompare(b.date) || a.start.localeCompare(b.start));
     setBlackouts(next);
-    saveProfile.mutate({ blackouts: next });
+    save({ blackouts: next });
   };
 
   const [pollTitle,setPollTitle] = useState("");
@@ -81,8 +96,8 @@ export default function Scheduling() {
     <div><div className="flex items-center gap-3"><CalendarClock className="w-8 h-8 text-primary"/><h1 className="text-4xl font-display font-bold">Scheduling</h1></div><p className="text-muted-foreground text-lg mt-2">Share availability for instant booking or find a group consensus.</p></div>
 
     <section className="glass-card rounded-3xl p-6 md:p-8 space-y-7">
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4"><div><h2 className="text-2xl font-bold">Your booking page</h2><p className="text-muted-foreground">Only open times are public. Calendar details stay private.</p></div><Button size="lg" onClick={()=>saveProfile.mutate({})} disabled={saveProfile.isPending||!displayName} className="rounded-xl md:flex-shrink-0">{saveProfile.isPending?<Loader2 className="w-4 h-4 animate-spin mr-2"/>:<Check className="w-4 h-4 mr-2"/>}{bookingUrl?"Save changes":"Save and create share link"}</Button></div>
-      {profileQuery.isLoading ? <div className="h-20 rounded-2xl bg-muted/40 animate-pulse" /> : bookingUrl ? <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 sm:p-5"><p className="text-sm font-bold text-emerald-800">Your public booking link is live</p><div className="mt-3 flex flex-col sm:flex-row gap-2"><Input readOnly value={bookingUrl} className="bg-white font-medium"/><Button variant="outline" className="bg-white" onClick={() => {navigator.clipboard.writeText(bookingUrl);toast({title:"Booking link copied"})}}><Clipboard className="w-4 h-4 mr-2"/>Copy link</Button><a href={bookingUrl} target="_blank" rel="noreferrer"><Button variant="outline" className="w-full bg-white"><ExternalLink className="w-4 h-4 mr-2"/>Preview</Button></a></div></div> : <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4"><div><p className="font-bold text-amber-900">Publish once to create your share link</p><p className="text-sm text-amber-800 mt-1">Set your hours below, then use the button to make your booking page live.</p></div><Button onClick={()=>saveProfile.mutate({})} disabled={saveProfile.isPending||!displayName} className="rounded-xl flex-shrink-0">Save and get link</Button></div>}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4"><div><h2 className="text-2xl font-bold">Your booking page</h2><p className="text-muted-foreground">Only open times are public. Calendar details stay private.</p></div><Button size="lg" onClick={()=>save()} disabled={saveProfile.isPending||!displayName} className="rounded-xl md:flex-shrink-0">{saveProfile.isPending?<Loader2 className="w-4 h-4 animate-spin mr-2"/>:<Check className="w-4 h-4 mr-2"/>}{bookingUrl?"Save changes":"Save and create share link"}</Button></div>
+      {profileQuery.isLoading ? <div className="h-20 rounded-2xl bg-muted/40 animate-pulse" /> : bookingUrl ? <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 sm:p-5"><p className="text-sm font-bold text-emerald-800">Your public booking link is live</p><div className="mt-3 flex flex-col sm:flex-row gap-2"><Input readOnly value={bookingUrl} className="bg-white font-medium"/><Button variant="outline" className="bg-white" onClick={() => {navigator.clipboard.writeText(bookingUrl);toast({title:"Booking link copied"})}}><Clipboard className="w-4 h-4 mr-2"/>Copy link</Button><a href={bookingUrl} target="_blank" rel="noreferrer"><Button variant="outline" className="w-full bg-white"><ExternalLink className="w-4 h-4 mr-2"/>Preview</Button></a></div></div> : <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4"><div><p className="font-bold text-amber-900">Publish once to create your share link</p><p className="text-sm text-amber-800 mt-1">Set your hours below, then use the button to make your booking page live.</p></div><Button onClick={()=>save()} disabled={saveProfile.isPending||!displayName} className="rounded-xl flex-shrink-0">Save and get link</Button></div>}
       <div className="grid md:grid-cols-2 gap-5">
         <label className="space-y-2"><span className="text-sm font-semibold">Name shown to bookers</span><Input value={displayName} onChange={e=>setDisplayName(e.target.value)} placeholder="Felix"/></label>
         <label className="space-y-2"><span className="text-sm font-semibold">Booking link name</span><div className="flex items-center rounded-md border border-input bg-background focus-within:ring-2 focus-within:ring-ring"><span className="whitespace-nowrap pl-3 text-sm text-muted-foreground">/book/</span><Input value={bookingSlug} onChange={e=>setBookingSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g,"-"))} placeholder="felix-abayomi" className="border-0 shadow-none focus-visible:ring-0"/></div><span className="block text-xs text-muted-foreground">You may change this independently of your display name. Previously shared links will redirect here.</span></label>
@@ -100,7 +115,7 @@ export default function Scheduling() {
           {!blackoutAllDay&&<><label className="space-y-2"><span className="text-sm font-semibold">From</span><Input type="time" value={blackoutStart} onChange={e=>setBlackoutStart(e.target.value)}/></label><label className="space-y-2"><span className="text-sm font-semibold">Until</span><Input type="time" value={blackoutEnd} onChange={e=>setBlackoutEnd(e.target.value)}/></label></>}
           <Button type="button" variant="outline" onClick={addBlackout} disabled={saveProfile.isPending}><Plus className="mr-2 h-4 w-4"/>{saveProfile.isPending?"Saving…":"Block and save"}</Button>
         </div>
-        {blackouts.length?<div className="space-y-2">{blackouts.map(item=><div key={item.id} className="flex items-center justify-between gap-3 rounded-xl bg-muted/50 px-3 py-2"><p className="text-sm"><strong>{new Intl.DateTimeFormat(undefined,{dateStyle:"medium",timeZone:"UTC"}).format(new Date(`${item.date}T12:00:00Z`))}</strong><span className="text-muted-foreground"> · {item.allDay?"All day":`${item.start}–${item.end}`} ({timezone})</span></p><Button type="button" size="icon" variant="ghost" aria-label="Remove and save blocked time" disabled={saveProfile.isPending} onClick={()=>{const next=blackouts.filter(block=>block.id!==item.id);setBlackouts(next);saveProfile.mutate({blackouts:next})}}><Trash2 className="h-4 w-4"/></Button></div>)}</div>:<p className="text-sm text-muted-foreground">No dates or times are currently blocked.</p>}
+        {blackouts.length?<div className="space-y-2">{blackouts.map(item=><div key={item.id} className="flex items-center justify-between gap-3 rounded-xl bg-muted/50 px-3 py-2"><p className="text-sm"><strong>{new Intl.DateTimeFormat(undefined,{dateStyle:"medium",timeZone:"UTC"}).format(new Date(`${item.date}T12:00:00Z`))}</strong><span className="text-muted-foreground"> · {item.allDay?"All day":`${item.start}–${item.end}`} ({timezone})</span></p><Button type="button" size="icon" variant="ghost" aria-label="Remove and save blocked time" disabled={saveProfile.isPending} onClick={()=>{const next=blackouts.filter(block=>block.id!==item.id);setBlackouts(next);save({blackouts:next})}}><Trash2 className="h-4 w-4"/></Button></div>)}</div>:<p className="text-sm text-muted-foreground">No dates or times are currently blocked.</p>}
       </div>
     </section>
 
