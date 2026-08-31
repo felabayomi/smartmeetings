@@ -7,8 +7,8 @@ import webPush from "web-push";
 import { del, get, put } from "@vercel/blob";
 import { addDays, addHours, addMinutes } from "date-fns";
 import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
-import { RecurrenceError } from "../lib/recurrence.mjs";
-import { ensureRecurrenceTables, materializeSeries, createSeries, excludeOccurrence } from "../lib/recurrence-store.mjs";
+import { RecurrenceError } from "../lib/recurrence.cjs";
+import { ensureRecurrenceTables, materializeSeries, createSeries, excludeOccurrence } from "../lib/recurrence-store.cjs";
 
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
 const clerk = createClerkClient({
