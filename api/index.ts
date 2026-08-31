@@ -7,6 +7,8 @@ import webPush from "web-push";
 import { del, get, put } from "@vercel/blob";
 import { addDays, addHours, addMinutes } from "date-fns";
 import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
+import { RecurrenceError } from "../lib/recurrence.mjs";
+import { ensureRecurrenceTables, materializeSeries, createSeries, excludeOccurrence } from "../lib/recurrence-store.mjs";
 
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
 const clerk = createClerkClient({
@@ -101,12 +103,13 @@ async function removeExpiredUnlinkedScans(userId) {
 }
 
 async function sendPushReminders() {
+  await materializeSeries(pool);
   await ensurePushTables();
   const now = new Date();
   const windowStart = addMinutes(now, -5);
   const meetings = await pool.query(
     `SELECT * FROM meetings WHERE start_time > $1 AND start_time < $2`,
-    [windowStart, addDays(now, 2)],
+    [windowStart, addDays(now, 8)],
   );
   let sent = 0;
   for (const row of meetings.rows) {
@@ -396,6 +399,7 @@ async function availableSlots(
   days = 30,
   exclude = {},
 ) {
+  await materializeSeries(pool, profile.user_id);
   const candidates = slotCandidates(profile, from, Math.min(days, 60)).filter(
     (slot) => !overlapsBlackout(slot, profile),
   );
@@ -561,6 +565,19 @@ const extractedMeetingSchema = {
     meetingUrl: { type: ["string", "null"] },
     notes: { type: ["string", "null"] },
     confidence: { type: ["number", "null"], minimum: 0, maximum: 1 },
+    recurrence: {
+      type: ["object", "null"], additionalProperties: false,
+      properties: {
+        frequency: { type: "string", enum: ["daily", "weekly", "monthly", "yearly"] },
+        interval: { type: "integer", minimum: 1, maximum: 365 },
+        timezone: { type: "string" },
+        weekdays: { type: "array", items: { type: "integer", minimum: 0, maximum: 6 } },
+        count: { type: ["integer", "null"], minimum: 1, maximum: 1000 },
+        until: { type: ["string", "null"] },
+      },
+      required: ["frequency", "interval", "timezone", "weekdays", "count", "until"],
+      description: "Repeat rule only when explicitly stated. Use the source event IANA timezone; Sunday=0. Until is an inclusive YYYY-MM-DD date. Null count and until means no stated end. Do not expand repeats into separate meetings.",
+    },
   },
   required: [
     "title",
@@ -578,6 +595,7 @@ const extractedMeetingSchema = {
     "meetingUrl",
     "notes",
     "confidence",
+    "recurrence",
   ],
 };
 
@@ -614,6 +632,8 @@ function meeting(row: Record<string, unknown>) {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     hasSourceImage: Boolean(row.scan_source_id),
+    seriesId: row.series_id || null,
+    recurrence: row.recurrence || null,
   };
 }
 
@@ -1627,6 +1647,7 @@ export default async function handler(request, response) {
     }
 
     if (path === "/meetings" && request.method === "GET") {
+      await materializeSeries(pool, userId);
       const result = await pool.query(
         "SELECT * FROM meetings WHERE calendar_token = $1 ORDER BY start_time",
         [userId],
@@ -1636,6 +1657,7 @@ export default async function handler(request, response) {
 
     if (path === "/meetings" && request.method === "POST") {
       await ensureScanStorageTables();
+      await ensureRecurrenceTables(pool);
       const values = meetingValues(request.body);
       const keys = Object.keys(values);
       const sourceScanId =
@@ -1649,6 +1671,16 @@ export default async function handler(request, response) {
         );
         if (!source.rowCount)
           return response.status(400).json({ error: "Invalid original scan" });
+      }
+      if (request.body?.recurrence) {
+        const client = await pool.connect();
+        try {
+          await client.query("BEGIN");
+          const row = await createSeries(client, userId, { ...values, sourceScanId }, request.body.recurrence);
+          await client.query("COMMIT");
+          return response.status(201).json(meeting(row));
+        } catch (error) { await client.query("ROLLBACK"); throw error; }
+        finally { client.release(); }
       }
       const columns = [
         "calendar_token",
@@ -1668,8 +1700,57 @@ export default async function handler(request, response) {
       return response.status(201).json(meeting(result.rows[0]));
     }
 
+    const seriesMatch = path.match(/^\/meetings\/(\d+)\/series$/);
+    if (seriesMatch && request.method === "POST") {
+      await ensureRecurrenceTables(pool);
+      const { action, scope } = request.body || {};
+      if (!["update", "delete"].includes(action) || !["all", "future"].includes(scope))
+        return response.status(400).json({ error: "Invalid series action" });
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const found = await client.query("SELECT * FROM meetings WHERE id=$1 AND calendar_token=$2", [Number(seriesMatch[1]), userId]);
+        if (!found.rowCount) { await client.query("ROLLBACK"); return response.status(404).json({ error: "Meeting not found" }); }
+        let selected = found.rows[0];
+        const series = selected.series_id ? (await client.query("SELECT * FROM meeting_series WHERE id=$1 AND owner_id=$2 FOR UPDATE", [selected.series_id,userId])).rows[0] : null;
+        const locked = await client.query("SELECT * FROM meetings WHERE id=$1 AND calendar_token=$2 FOR UPDATE",[selected.id,userId]);
+        if (!locked.rowCount) throw new RecurrenceError("This occurrence changed in another window. Refresh before editing.");
+        selected = locked.rows[0];
+        let replacement = null;
+        if (action === "update") {
+          const values = meetingValues(request.body.meeting);
+          // Preserve the series' first date when editing the entire series from
+          // a later occurrence; shift by the reviewed local calendar delta.
+          if (series && scope === "all") {
+            const zone = request.body.recurrence?.timezone || series.rule.timezone;
+            const wall = value => Date.parse(formatInTimeZone(value, zone, "yyyy-MM-dd'T'HH:mm:ss") + "Z");
+            const duration = values.endTime ? Date.parse(values.endTime)-Date.parse(values.startTime) : null;
+            const shifted = new Date(wall(series.template.startTime) + wall(values.startTime)-wall(selected.start_time)).toISOString().slice(0,19);
+            values.startTime = fromZonedTime(shifted, zone).toISOString();
+            values.endTime = duration === null ? null : new Date(Date.parse(values.startTime)+duration).toISOString();
+          }
+          replacement = await createSeries(client,userId,{...values,sourceScanId:selected.scan_source_id},request.body.recurrence);
+        }
+        if (series) {
+          if (scope === "all") await client.query("UPDATE meeting_series SET active=FALSE WHERE id=$1",[series.id]);
+          else await client.query("UPDATE meeting_series SET stop_before=$2 WHERE id=$1",[series.id,selected.recurrence_key]);
+          await client.query("DELETE FROM meetings WHERE calendar_token=$1 AND series_id=$2 AND ($3::text='all' OR recurrence_key >= $4)",[userId,series.id,scope,selected.recurrence_key]);
+        } else {
+          // Direct bookings keep their management link: they cannot be turned
+          // into recurring series through a calendar edit.
+          const linked = await client.query("SELECT 1 FROM bookings WHERE meeting_id=$1",[selected.id]);
+          if (linked.rowCount) throw new RecurrenceError("A guest booking cannot be converted into a recurring series.");
+          await client.query("DELETE FROM meetings WHERE id=$1 AND calendar_token=$2",[selected.id,userId]);
+        }
+        await client.query("COMMIT");
+        return response.status(200).json(replacement ? meeting(replacement) : {success:true});
+      } catch(error) { await client.query("ROLLBACK"); throw error; }
+      finally { client.release(); }
+    }
+
     const match = path.match(/^\/meetings\/(\d+)$/);
     if (match) {
+      await ensureRecurrenceTables(pool);
       const id = Number(match[1]);
       if (request.method === "GET") {
         const result = await pool.query(
@@ -1707,10 +1788,15 @@ export default async function handler(request, response) {
         let scanSourceId = null;
         try {
           await client.query("BEGIN");
+          // Always lock the parent series before its occurrence, matching the
+          // materializer and series editor lock order.
+          const parent = await client.query("SELECT series_id FROM meetings WHERE id=$1 AND calendar_token=$2",[id,userId]);
+          if (parent.rows[0]?.series_id) await client.query("SELECT id FROM meeting_series WHERE id=$1 AND owner_id=$2 FOR UPDATE",[parent.rows[0].series_id,userId]);
           const source = await client.query(
-            "SELECT scan_source_id FROM meetings WHERE id=$1 AND calendar_token=$2 FOR UPDATE",
+            "SELECT scan_source_id,series_id,recurrence_key FROM meetings WHERE id=$1 AND calendar_token=$2 FOR UPDATE",
             [id, userId],
           );
+          if (source.rows[0]) await excludeOccurrence(client, source.rows[0]);
           await client.query(
             `DELETE FROM bookings
             WHERE owner_id = $2 AND meeting_id IN (
@@ -1760,6 +1846,7 @@ export default async function handler(request, response) {
 
     return response.status(404).json({ error: "Not found" });
   } catch (error) {
+    if (error instanceof RecurrenceError) return response.status(400).json({ error: error.message });
     console.error("Meeting API error", error);
     const message = error instanceof Error ? error.message : "Request failed";
     if (

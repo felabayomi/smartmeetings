@@ -6,17 +6,13 @@ import {
   useCreateMeeting,
   useUpdateMeeting,
   useDeleteMeeting,
+  customFetch,
 } from "@workspace/api-client-react";
-import { Meeting } from "@workspace/api-client-react/src/generated/api.schemas";
-import { useQueryClient } from "@tanstack/react-query";
+import type { Meeting } from "@workspace/api-client-react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
-import {
-  APP_TZ,
-  APP_TZ_LABEL,
-  toDatetimeLocalEST,
-  fromDatetimeLocalEST,
-} from "@/lib/timezone";
-import { formatInTimeZone } from "date-fns-tz";
+import { APP_TZ } from "@/lib/timezone";
+import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 import {
   Calendar,
   Clock,
@@ -84,12 +80,14 @@ const COLORS = [
 ];
 
 interface MeetingFormProps {
-  initialData?: Partial<Meeting>;
+  initialData?: Partial<Meeting> & { seriesId?: string | null; recurrence?: RecurrenceRule | null };
   onSuccess: () => void;
   onCancel: () => void;
   isAiExtracted?: boolean;
   aiReviewProgress?: { current: number; total: number };
 }
+
+type RecurrenceRule = { frequency: string; interval: number; timezone: string; weekdays: number[]; count: number | null; until: string | null };
 
 export function MeetingForm({
   initialData,
@@ -101,6 +99,21 @@ export function MeetingForm({
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const isEditing = !!initialData?.id;
+  const initialRule = initialData?.recurrence;
+  const initialEventTimezone = initialRule?.timezone || initialData?.timezone || APP_TZ;
+  const [eventTimezone,setEventTimezone] = useState(initialEventTimezone);
+  const [frequency,setFrequency] = useState(initialRule?.frequency || "none");
+  const [repeatInterval,setRepeatInterval] = useState(initialRule?.interval || 1);
+  const [weekdays,setWeekdays] = useState<number[]>(initialRule?.weekdays || []);
+  const [ending,setEnding] = useState(initialRule?.count ? "count" : initialRule?.until ? "until" : "never");
+  const [repeatCount,setRepeatCount] = useState(initialRule?.count || 10);
+  const [repeatUntil,setRepeatUntil] = useState(initialRule?.until || "");
+  const [seriesScope,setSeriesScope] = useState("single");
+  const seriesMutation = useMutation({
+    mutationFn: (body: Record<string,unknown>) => customFetch(`/api/meetings/${initialData?.id}/series`, {method:"POST",responseType:"json",body:JSON.stringify(body)}),
+    onSuccess: () => { queryClient.invalidateQueries({queryKey:["/api/meetings"]}); toast({title:"Recurring series updated"}); onSuccess(); },
+    onError: (error: Error) => toast({variant:"destructive",title:"Could not update series",description:error.message}),
+  });
 
   const createMutation = useCreateMeeting({
     mutation: {
@@ -154,7 +167,7 @@ export function MeetingForm({
 
   // Format each absolute timestamp exactly once in the app's Eastern timezone.
   const formatForInput = (dateString?: string | null) =>
-    toDatetimeLocalEST(dateString);
+    dateString ? formatInTimeZone(dateString, initialEventTimezone, "yyyy-MM-dd'T'HH:mm") : "";
 
   // Track how many reminder slots are visible (1–3)
   const countInitialSlots = () => {
@@ -206,28 +219,46 @@ export function MeetingForm({
   });
 
   const onSubmit = (values: FormValues) => {
-    // Treat the reviewed wall-clock value as Eastern and convert it once to UTC.
-    const toIso = (val?: string | null) => fromDatetimeLocalEST(val);
+    let recurrence: RecurrenceRule | null = null;
+    try {
+      new Intl.DateTimeFormat("en",{timeZone:eventTimezone}).format();
+      if (frequency !== "none") {
+        if (!Number.isInteger(repeatInterval) || repeatInterval < 1 || repeatInterval > 365) throw new Error("Repeat interval must be 1–365.");
+        if (ending === "count" && (!Number.isInteger(repeatCount) || repeatCount < 1 || repeatCount > 1000)) throw new Error("Occurrence count must be 1–1000.");
+        if (ending === "until" && (!repeatUntil || repeatUntil < values.startTime.slice(0,10))) throw new Error("Choose an end date on or after the meeting date.");
+        recurrence = {frequency, interval:repeatInterval, timezone:eventTimezone, weekdays, count:ending === "count" ? repeatCount : null, until:ending === "until" ? repeatUntil : null};
+      }
+    } catch(error) { toast({variant:"destructive",title:"Check recurrence settings",description:error instanceof Error ? error.message : "Invalid timezone"}); return; }
+    const toIso = (val?: string | null) => val ? fromZonedTime(val,eventTimezone).toISOString() : null;
+    for (const value of [values.startTime,values.endTime].filter(Boolean) as string[]) {
+      if (formatInTimeZone(fromZonedTime(value,eventTimezone),eventTimezone,"yyyy-MM-dd'T'HH:mm") !== value.slice(0,16)) {
+        toast({variant:"destructive",title:"This local time does not exist",description:"Choose a time outside the daylight-saving clock change."}); return;
+      }
+    }
+    if (values.endTime && values.endTime <= values.startTime) { toast({variant:"destructive",title:"End time must follow start time"}); return; }
 
     const payload = {
       ...values,
       startTime: toIso(values.startTime)!,
       endTime: toIso(values.endTime),
-      timezone: APP_TZ,
+      timezone: eventTimezone,
+      recurrence,
       sourceScanId: !isEditing ? (initialData as any)?.sourceScanId : undefined,
       // Only send slots that are visible; clear hidden ones
       reminderMinutes2: reminderCount >= 2 ? values.reminderMinutes2 : null,
       reminderMinutes3: reminderCount >= 3 ? values.reminderMinutes3 : null,
     };
 
-    if (isEditing && initialData.id) {
+    if (isEditing && initialData.id && ((initialData.seriesId && seriesScope !== "single") || (!initialData.seriesId && recurrence))) {
+      seriesMutation.mutate({action:"update",scope:initialData.seriesId?seriesScope:"all",meeting:payload,recurrence});
+    } else if (isEditing && initialData.id) {
       updateMutation.mutate({ id: initialData.id, data: payload });
     } else {
       createMutation.mutate({ data: payload });
     }
   };
 
-  const isPending = createMutation.isPending || updateMutation.isPending;
+  const isPending = createMutation.isPending || updateMutation.isPending || seriesMutation.isPending || deleteMutation.isPending;
 
   return (
     <div className="bg-card rounded-2xl overflow-hidden shadow-2xl border border-border flex flex-col max-h-[90vh]">
@@ -256,11 +287,13 @@ export function MeetingForm({
             size="icon"
             className="text-destructive hover:text-destructive hover:bg-destructive/10"
             onClick={() => {
-              if (confirm("Are you sure you want to delete this meeting?")) {
-                deleteMutation.mutate({ id: initialData.id! });
+              const label = initialData.seriesId && seriesScope !== "single" ? (seriesScope === "all" ? "the entire recurring series" : "this and all future occurrences") : "this occurrence";
+              if (confirm(`Delete ${label}?`)) {
+                if (initialData.seriesId && seriesScope !== "single") seriesMutation.mutate({action:"delete",scope:seriesScope});
+                else deleteMutation.mutate({ id: initialData.id! });
               }
             }}
-            disabled={deleteMutation.isPending}
+            disabled={isPending}
           >
             {deleteMutation.isPending ? (
               <Loader2 className="w-5 h-5 animate-spin" />
@@ -308,6 +341,39 @@ export function MeetingForm({
               </div>
             )}
 
+            <section className="space-y-3 rounded-xl border p-4">
+              <h3 className="font-semibold">Repeat meeting</h3>
+              {initialData?.seriesId && <label className="block space-y-1 text-sm">Apply edits or deletion to
+                <select className="w-full rounded-md border bg-background p-2" value={seriesScope} onChange={e=>setSeriesScope(e.target.value)}>
+                  <option value="single">Only this occurrence</option><option value="future">This and future occurrences</option><option value="all">Entire series</option>
+                </select>
+              </label>}
+              <label className="block space-y-1 text-sm">Event timezone (IANA name)
+                <Input value={eventTimezone} onChange={e=>setEventTimezone(e.target.value)} placeholder="America/New_York" />
+              </label>
+              <p className="text-xs text-muted-foreground">The start and end fields below use this timezone. Repeats keep the same local time through daylight-saving changes.</p>
+              <fieldset disabled={Boolean(initialData?.seriesId && seriesScope === "single")} className="space-y-3 disabled:opacity-60">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <label className="text-sm space-y-1">Frequency
+                    <select className="w-full rounded-md border bg-background p-2" value={frequency} onChange={e=>setFrequency(e.target.value)}>
+                      {!initialData?.seriesId && <option value="none">Does not repeat</option>}
+                      <option value="daily">Days</option><option value="weekly">Weeks</option><option value="monthly">Months</option><option value="yearly">Years</option>
+                    </select>
+                  </label>
+                  {frequency !== "none" && <label className="text-sm space-y-1">Repeat every
+                    <Input type="number" min={1} max={365} value={repeatInterval} onChange={e=>setRepeatInterval(Number(e.target.value))}/>
+                  </label>}
+                </div>
+                {frequency === "weekly" && <div><p className="text-sm mb-2">On these weekdays (leave empty to use the start day)</p><div className="flex flex-wrap gap-3">{["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map((name,day)=><label key={day} className="flex items-center gap-1 text-sm"><input type="checkbox" checked={weekdays.includes(day)} onChange={e=>setWeekdays(items=>e.target.checked?[...items,day]:items.filter(d=>d!==day))}/>{name}</label>)}</div></div>}
+                {frequency !== "none" && <div className="grid grid-cols-1 sm:grid-cols-2 gap-3"><label className="text-sm space-y-1">Ends
+                  <select className="w-full rounded-md border bg-background p-2" value={ending} onChange={e=>setEnding(e.target.value)}><option value="never">Never</option><option value="count">After a number of occurrences</option><option value="until">On a date (inclusive)</option></select>
+                </label>{ending === "count" && <label className="text-sm space-y-1">Occurrences (including the first)<Input type="number" min={1} max={1000} value={repeatCount} onChange={e=>setRepeatCount(Number(e.target.value))}/></label>}{ending === "until" && <label className="text-sm space-y-1">Last date<Input type="date" value={repeatUntil} onChange={e=>setRepeatUntil(e.target.value)}/></label>}</div>}
+              </fieldset>
+              {frequency !== "none" && <p className="text-xs text-muted-foreground">Future occurrences are populated about 18 months ahead and extended automatically. Invalid dates (such as February 30) and nonexistent daylight-saving times are skipped. Each occurrence blocks booking availability and has its own reminders.</p>}
+              {initialData?.seriesId && seriesScope !== "single" && <p className="text-xs text-amber-700">This replaces the selected part of the series, including individual exceptions. For “this and future,” the occurrence count starts again here. To end the series, choose “this and future” and use the delete button.</p>}
+              {isAiExtracted && <p className="text-sm font-medium">Check the repeat rule against your invitation before saving. Scanning does not save the series automatically.</p>}
+            </section>
+
             <FormField
               control={form.control}
               name="title"
@@ -336,7 +402,7 @@ export function MeetingForm({
                   <FormItem>
                     <FormLabel className="text-muted-foreground flex items-center">
                       <Calendar className="w-4 h-4 mr-2" /> Start Time (
-                      {APP_TZ_LABEL})
+                      {eventTimezone})
                     </FormLabel>
                     <FormControl>
                       <Input
