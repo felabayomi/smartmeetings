@@ -9,6 +9,8 @@ import { addDays, addHours, addMinutes } from "date-fns";
 import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 import { RecurrenceError } from "../lib/recurrence.cjs";
 import { ensureRecurrenceTables, materializeSeries, createSeries, excludeOccurrence } from "../lib/recurrence-store.cjs";
+import { parseIcs, IcsError } from "../lib/ics-import.cjs";
+import { ensureImportTables, importEvents } from "../lib/ics-store.cjs";
 
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
 const clerk = createClerkClient({
@@ -103,6 +105,7 @@ async function removeExpiredUnlinkedScans(userId) {
 }
 
 async function sendPushReminders() {
+  await ensureImportTables(pool);
   await materializeSeries(pool);
   await ensurePushTables();
   const now = new Date();
@@ -117,6 +120,7 @@ async function sendPushReminders() {
       row.reminder_minutes ?? 15,
       row.reminder_minutes_2,
       row.reminder_minutes_3,
+      row.reminder_minutes_4,
     ].filter((value) => Number.isFinite(value));
     for (const minutes of reminders) {
       const fireAt = addMinutes(new Date(row.start_time), -Number(minutes));
@@ -128,7 +132,9 @@ async function sendPushReminders() {
       );
       if (!claimed.rowCount) continue;
       const label =
-        Number(minutes) >= 60
+        Number(minutes) >= 1440 && Number(minutes) % 1440 === 0
+          ? `${Number(minutes) / 1440} day${Number(minutes) >= 2880 ? "s" : ""}`
+          : Number(minutes) >= 60
           ? `${Math.round(Number(minutes) / 60)} hour${Number(minutes) >= 120 ? "s" : ""}`
           : `${minutes} minutes`;
       await pool.query(
@@ -628,6 +634,7 @@ function meeting(row: Record<string, unknown>) {
     reminderMinutes: row.reminder_minutes,
     reminderMinutes2: row.reminder_minutes_2,
     reminderMinutes3: row.reminder_minutes_3,
+    reminderMinutes4: row.reminder_minutes_4,
     color: row.color,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -689,6 +696,7 @@ const editableFields = {
   reminderMinutes: "reminder_minutes",
   reminderMinutes2: "reminder_minutes_2",
   reminderMinutes3: "reminder_minutes_3",
+  reminderMinutes4: "reminder_minutes_4",
   color: "color",
 };
 
@@ -1293,6 +1301,23 @@ export default async function handler(request, response) {
     if (!userId)
       return response.status(401).json({ error: "Sign in required" });
 
+    if (path.startsWith("/meetings")) await ensureImportTables(pool);
+    if ((path === "/meetings/import-preview" || path === "/meetings/import") && request.method === "POST") {
+      const { text, timezone, selectedUids, confirmed } = request.body || {};
+      const preview = parseIcs(text, timezone);
+      if (path === "/meetings/import-preview") {
+        const prior = await pool.query("SELECT uid FROM calendar_imports WHERE owner_id=$1 AND uid=ANY($2::text[])",[userId,preview.events.map(event=>event.uid)]);
+        const imported = new Set(prior.rows.map(row=>row.uid));
+        return response.status(200).json({...preview,events:preview.events.map(event=>({...event,alreadyImported:imported.has(event.uid)}))});
+      }
+      if (confirmed !== true || !Array.isArray(selectedUids) || !selectedUids.length || selectedUids.length>200)
+        return response.status(400).json({error:"Review the preview and confirm which events to import."});
+      const selected = new Set(selectedUids);
+      const events = preview.events.filter(event=>selected.has(event.uid));
+      if (events.length !== selected.size) return response.status(400).json({error:"Some selected entries are no longer valid. Preview again."});
+      return response.status(200).json(await importEvents(pool,userId,events));
+    }
+
     if (path === "/push/subscribe" && request.method === "POST") {
       await ensurePushTables();
       const { endpoint, keys } = request.body || {};
@@ -1846,6 +1871,7 @@ export default async function handler(request, response) {
 
     return response.status(404).json({ error: "Not found" });
   } catch (error) {
+    if (error instanceof IcsError) return response.status(400).json({error:error.message});
     if (error instanceof RecurrenceError) return response.status(400).json({ error: error.message });
     console.error("Meeting API error", error);
     const message = error instanceof Error ? error.message : "Request failed";

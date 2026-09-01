@@ -24,6 +24,7 @@ import { MeetingCard } from "@/components/meeting-card";
 import { CalendarView } from "@/components/calendar-view";
 import { MeetingForm } from "@/components/meeting-form";
 import { AiUploadModal } from "@/components/ai-upload-modal";
+import { IcsImportButton } from "@/components/ics-import-button";
 import { MeetingDetailModal } from "@/components/meeting-detail-modal";
 import { DayModal } from "@/components/day-modal";
 import { AddMeetingChoiceModal } from "@/components/add-meeting-choice-modal";
@@ -288,6 +289,7 @@ export default function Dashboard() {
           </div>
           <div className="flex gap-3 w-full sm:w-auto flex-wrap">
             {pushButton()}
+            <IcsImportButton />
             <Button
               variant="outline"
               className="flex-1 sm:flex-none rounded-xl h-12 px-4 border-primary/20 hover:bg-primary/5 text-primary hover:text-primary transition-all font-semibold"

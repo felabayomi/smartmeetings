@@ -57,6 +57,7 @@ export function MeetingDetailModal({
     meeting.reminderMinutes,
     (meeting as any).reminderMinutes2,
     (meeting as any).reminderMinutes3,
+    (meeting as any).reminderMinutes4,
   ]
     .map(reminderLabel)
     .filter(Boolean) as string[];

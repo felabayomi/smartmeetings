@@ -65,6 +65,7 @@ const formSchema = z.object({
   reminderMinutes: z.coerce.number().optional().nullable(),
   reminderMinutes2: z.coerce.number().optional().nullable(),
   reminderMinutes3: z.coerce.number().optional().nullable(),
+  reminderMinutes4: z.coerce.number().optional().nullable(),
   color: z.string().optional().nullable(),
 });
 
@@ -174,6 +175,7 @@ export function MeetingForm({
     let c = 1;
     if ((initialData as any)?.reminderMinutes2 != null) c = 2;
     if ((initialData as any)?.reminderMinutes3 != null) c = 3;
+    if ((initialData as any)?.reminderMinutes4 != null) c = 4;
     return c;
   };
   const [reminderCount, setReminderCount] = useState(countInitialSlots);
@@ -214,6 +216,7 @@ export function MeetingForm({
       reminderMinutes: initialData?.reminderMinutes ?? 15,
       reminderMinutes2: (initialData as any)?.reminderMinutes2 ?? null,
       reminderMinutes3: (initialData as any)?.reminderMinutes3 ?? null,
+      reminderMinutes4: (initialData as any)?.reminderMinutes4 ?? null,
       color: initialData?.color || "#6366f1",
     },
   });
@@ -247,6 +250,7 @@ export function MeetingForm({
       // Only send slots that are visible; clear hidden ones
       reminderMinutes2: reminderCount >= 2 ? values.reminderMinutes2 : null,
       reminderMinutes3: reminderCount >= 3 ? values.reminderMinutes3 : null,
+      reminderMinutes4: reminderCount >= 4 ? values.reminderMinutes4 : null,
     };
 
     if (isEditing && initialData.id && ((initialData.seriesId && seriesScope !== "single") || (!initialData.seriesId && recurrence))) {
@@ -258,6 +262,13 @@ export function MeetingForm({
     }
   };
 
+  const reminderFields = ["reminderMinutes","reminderMinutes2","reminderMinutes3","reminderMinutes4"] as const;
+  const removeReminder = (index:number) => {
+    const values = reminderFields.map(key=>form.getValues(key) ?? null);
+    values.splice(index,1); values.push(null);
+    reminderFields.forEach((key,i)=>form.setValue(key,values[i]));
+    setReminderCount(count=>Math.max(1,count-1));
+  };
   const isPending = createMutation.isPending || updateMutation.isPending || seriesMutation.isPending || deleteMutation.isPending;
 
   return (
@@ -532,18 +543,16 @@ export function MeetingForm({
                   <span className="text-sm font-medium text-muted-foreground flex items-center">
                     <Bell className="w-4 h-4 mr-2" /> Reminders
                     <span className="ml-2 text-xs text-muted-foreground/60">
-                      ({reminderCount}/3)
+                      ({reminderCount}/4)
                     </span>
                   </span>
-                  {reminderCount < 3 && (
+                  {reminderCount < 4 && (
                     <Button
                       type="button"
                       variant="ghost"
                       size="sm"
                       className="h-7 px-2 text-xs text-primary hover:text-primary hover:bg-primary/10 rounded-lg"
-                      onClick={() =>
-                        setReminderCount((c) => Math.min(3, c + 1))
-                      }
+                      onClick={() => {form.setValue(reminderFields[reminderCount],15);setReminderCount((c) => Math.min(4, c + 1));}}
                     >
                       <Plus className="w-3 h-3 mr-1" /> Add reminder
                     </Button>
@@ -565,11 +574,7 @@ export function MeetingForm({
                     value={form.watch("reminderMinutes2")}
                     onChange={(v) => form.setValue("reminderMinutes2", v)}
                     canRemove
-                    onRemove={() => {
-                      form.setValue("reminderMinutes2", null);
-                      form.setValue("reminderMinutes3", null);
-                      setReminderCount((c) => c - 1);
-                    }}
+                    onRemove={() => removeReminder(1)}
                   />
                 )}
 
@@ -580,12 +585,10 @@ export function MeetingForm({
                     value={form.watch("reminderMinutes3")}
                     onChange={(v) => form.setValue("reminderMinutes3", v)}
                     canRemove
-                    onRemove={() => {
-                      form.setValue("reminderMinutes3", null);
-                      setReminderCount((c) => c - 1);
-                    }}
+                    onRemove={() => removeReminder(2)}
                   />
                 )}
+                {reminderCount >= 4 && <ReminderSlot label="4th reminder" value={form.watch("reminderMinutes4")} onChange={v=>form.setValue("reminderMinutes4",v)} canRemove onRemove={()=>removeReminder(3)} />}
               </div>
 
               <FormField
