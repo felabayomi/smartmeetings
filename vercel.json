@@ -4,6 +4,12 @@
   "outputDirectory": "artifacts/meetmind/dist/public",
   "installCommand": "pnpm install --frozen-lockfile"
   ,"framework": "vite",
+  "crons": [
+    {
+      "path": "/api/push/send-reminders",
+      "schedule": "*/5 * * * *"
+    }
+  ],
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/index" },
     { "source": "/((?!api/).*)", "destination": "/index.html" }

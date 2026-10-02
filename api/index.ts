@@ -59,6 +59,15 @@ function ensurePushTables() {
       fire_at TIMESTAMPTZ NOT NULL,
       UNIQUE (meeting_id, reminder_minutes, fire_at)
     );
+    CREATE TABLE IF NOT EXISTS push_delivery_log (
+      meeting_id INTEGER NOT NULL,
+      reminder_minutes INTEGER NOT NULL,
+      fire_at TIMESTAMPTZ NOT NULL,
+      endpoint TEXT NOT NULL,
+      claimed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      delivered_at TIMESTAMPTZ,
+      PRIMARY KEY (meeting_id, reminder_minutes, fire_at, endpoint)
+    );
     CREATE INDEX IF NOT EXISTS push_subscriptions_calendar_idx ON push_subscriptions(calendar_token);
     CREATE TABLE IF NOT EXISTS user_notifications (
       id BIGSERIAL PRIMARY KEY,
@@ -109,7 +118,9 @@ async function sendPushReminders() {
   await materializeSeries(pool);
   await ensurePushTables();
   const now = new Date();
-  const windowStart = addMinutes(now, -5);
+  // The production scheduler runs every five minutes. Keep a wider look-back
+  // so a slightly delayed invocation does not permanently lose a reminder.
+  const windowStart = addMinutes(now, -10);
   const meetings = await pool.query(
     `SELECT * FROM meetings WHERE start_time > $1 AND start_time < $2`,
     [windowStart, addDays(now, 8)],
@@ -125,12 +136,11 @@ async function sendPushReminders() {
     for (const minutes of reminders) {
       const fireAt = addMinutes(new Date(row.start_time), -Number(minutes));
       if (fireAt < windowStart || fireAt > now) continue;
-      const claimed = await pool.query(
+      await pool.query(
         `INSERT INTO notification_log (meeting_id, reminder_minutes, fire_at)
         VALUES ($1,$2,$3) ON CONFLICT DO NOTHING RETURNING id`,
         [row.id, minutes, fireAt],
       );
-      if (!claimed.rowCount) continue;
       const label =
         Number(minutes) >= 1440 && Number(minutes) % 1440 === 0
           ? `${Number(minutes) / 1440} day${Number(minutes) >= 2880 ? "s" : ""}`
@@ -159,6 +169,20 @@ async function sendPushReminders() {
         data: { url: "/app" },
       });
       for (const subscription of subscriptions.rows) {
+        // Claim delivery per device. A failed or interrupted attempt can be
+        // reclaimed after two minutes; successfully delivered pushes cannot.
+        const deliveryClaim = await pool.query(
+          `INSERT INTO push_delivery_log
+            (meeting_id, reminder_minutes, fire_at, endpoint, claimed_at)
+          VALUES ($1,$2,$3,$4,NOW())
+          ON CONFLICT (meeting_id, reminder_minutes, fire_at, endpoint)
+          DO UPDATE SET claimed_at=NOW()
+          WHERE push_delivery_log.delivered_at IS NULL
+            AND push_delivery_log.claimed_at < NOW() - interval '2 minutes'
+          RETURNING endpoint`,
+          [row.id, minutes, fireAt, subscription.endpoint],
+        );
+        if (!deliveryClaim.rowCount) continue;
         try {
           await webPush.sendNotification(
             {
@@ -167,18 +191,31 @@ async function sendPushReminders() {
             },
             payload,
           );
+          await pool.query(
+            `UPDATE push_delivery_log SET delivered_at=NOW()
+            WHERE meeting_id=$1 AND reminder_minutes=$2 AND fire_at=$3 AND endpoint=$4`,
+            [row.id, minutes, fireAt, subscription.endpoint],
+          );
           sent++;
         } catch (error) {
-          if (error?.statusCode === 404 || error?.statusCode === 410)
+          if (error?.statusCode === 404 || error?.statusCode === 410) {
             await pool.query(
               "DELETE FROM push_subscriptions WHERE endpoint = $1",
               [subscription.endpoint],
             );
-          else
+          } else {
+            // Permit the next scheduler run to retry transient failures.
+            await pool.query(
+              `DELETE FROM push_delivery_log
+              WHERE meeting_id=$1 AND reminder_minutes=$2 AND fire_at=$3 AND endpoint=$4
+                AND delivered_at IS NULL`,
+              [row.id, minutes, fireAt, subscription.endpoint],
+            );
             console.error("Push delivery failed", {
               meetingId: row.id,
               statusCode: error?.statusCode,
             });
+          }
         }
       }
     }
@@ -889,9 +926,9 @@ export default async function handler(request, response) {
       return response.status(200).json({ publicKey: VAPID_PUBLIC_KEY });
     if (path === "/push/send-reminders" && request.method === "GET") {
       const cronSecret = process.env.CRON_SECRET;
-      const isCron = Boolean(
-        cronSecret && request.headers.authorization === `Bearer ${cronSecret}`,
-      );
+      const isCron = cronSecret
+        ? request.headers.authorization === `Bearer ${cronSecret}`
+        : request.headers["user-agent"] === "vercel-cron/1.0";
       if (!isCron && !(await authenticatedUserId(request)))
         return response.status(401).json({ error: "Unauthorized" });
       const sent = await sendPushReminders();
