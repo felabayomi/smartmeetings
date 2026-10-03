@@ -5,8 +5,6 @@ import { db, meetingsTable } from "@workspace/db";
 
 const router = Router();
 
-const ADMIN_TOKEN = "admin/ark/felixdgreat";
-
 function safeLog(label: string, err: unknown) {
   try {
     const msg = err instanceof Error ? err.message : String(err);
@@ -34,12 +32,18 @@ function num(val: unknown): number | null {
   return isNaN(n) ? null : n;
 }
 
-/** Extract calendar token from request header; fall back to admin token. */
-function getToken(req: { headers: Record<string, string | string[] | undefined> }): string {
+/** Extract the required calendar token from the request header. */
+function getToken(req: { headers: Record<string, string | string[] | undefined> }): string | null {
   const h = req.headers["x-calendar-token"];
   const t = Array.isArray(h) ? h[0] : h;
-  return (t && t.trim()) ? t.trim() : ADMIN_TOKEN;
+  return (t && t.trim()) ? t.trim() : null;
 }
+
+router.use((req, res, next) => {
+  if (!getToken(req))
+    return res.status(401).json({ error: "Calendar token is required" });
+  next();
+});
 
 router.get("/meetings", async (req, res) => {
   try {

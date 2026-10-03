@@ -20,6 +20,19 @@ function urlBase64ToUint8Array(base64String: string): Uint8Array {
   return output;
 }
 
+function subscriptionUsesKey(
+  subscription: PushSubscription,
+  expectedKey: Uint8Array,
+): boolean {
+  const existingKey = subscription.options.applicationServerKey;
+  if (!existingKey) return false;
+  const existingBytes = new Uint8Array(existingKey);
+  return (
+    existingBytes.length === expectedKey.length &&
+    existingBytes.every((value, index) => value === expectedKey[index])
+  );
+}
+
 export type PushState =
   | "unsupported"
   | "denied"
@@ -64,9 +77,26 @@ export function usePushNotifications() {
     const refreshState = async () => {
       try {
         const reg = await navigator.serviceWorker.ready;
-        const sub = await reg.pushManager.getSubscription();
+        const vapidKey = urlBase64ToUint8Array(await getVapidKey());
+        let sub = await reg.pushManager.getSubscription();
         if (cancelled) return;
         if (sub) {
+          if (!subscriptionUsesKey(sub, vapidKey)) {
+            const token = await getToken();
+            await fetch(`${API_BASE}/api/push/unsubscribe`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${token}`,
+              },
+              body: JSON.stringify({ endpoint: sub.endpoint }),
+            });
+            await sub.unsubscribe();
+            sub = await reg.pushManager.subscribe({
+              userVisibleOnly: true,
+              applicationServerKey: vapidKey.buffer as ArrayBuffer,
+            });
+          }
           await saveSubscription(sub);
           setState("subscribed");
           return;
@@ -74,7 +104,6 @@ export function usePushNotifications() {
 
         // Do not ask for browser permission unless the server can finish the
         // subscription. This prevents an endless enable prompt on mobile.
-        await getVapidKey();
         if (!cancelled) setState("prompt");
       } catch (err) {
         console.warn("Push notifications are not configured:", err);
@@ -131,7 +160,7 @@ export function usePushNotifications() {
       const reg = await navigator.serviceWorker.ready;
       const sub = await reg.pushManager.subscribe({
         userVisibleOnly: true,
-        applicationServerKey: urlBase64ToUint8Array(vapidKey),
+        applicationServerKey: urlBase64ToUint8Array(vapidKey).buffer as ArrayBuffer,
       });
       await saveSubscription(sub);
       setState("subscribed");

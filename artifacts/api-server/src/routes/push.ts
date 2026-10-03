@@ -7,13 +7,14 @@ import { getUncachableResendClient } from "../resend-client";
 
 const router = Router();
 
-const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || "BM4A8xrDgKpyDmGEpDZlROCwsijp8uvy4a-EnW2zNDdCqE3FF0Idg67CwNJq2lPLsu0xl6jNBrPCYLDaylc5Ypo";
-const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || "YzukqYDQpFl0ll7euuU3HnW0Of_0a-JRl43r_ZRqQCo";
+const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY?.trim();
+const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY?.trim();
+const ADMIN_TOKEN = process.env.MEETMIND_ADMIN_CALENDAR_TOKEN?.trim();
+const REMINDER_EMAIL_TO = process.env.REMINDER_EMAIL_TO?.trim();
+const pushConfigured = Boolean(VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY);
 
-const ADMIN_TOKEN = "admin/ark/felixdgreat";
-const REMINDER_EMAIL_TO = "arkgco@outlook.com";
-
-webPush.setVapidDetails("mailto:meetmind@app.com", VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
+if (pushConfigured)
+  webPush.setVapidDetails("mailto:notifications@meetminder.app", VAPID_PUBLIC_KEY!, VAPID_PRIVATE_KEY!);
 
 function safeLog(label: string, err: unknown) {
   try {
@@ -103,6 +104,8 @@ function buildEmailHtml(meeting: {
 
 // Return public key so the frontend can subscribe
 router.get("/push/vapid-key", (_req, res) => {
+  if (!pushConfigured)
+    return res.status(503).json({ error: "Push notifications are not configured" });
   res.json({ publicKey: VAPID_PUBLIC_KEY });
 });
 
@@ -118,6 +121,8 @@ router.post("/push/subscribe", async (req, res) => {
       return res.status(400).json({ error: "Invalid subscription" });
     }
     const token = (calendarToken && calendarToken.trim()) ? calendarToken.trim() : ADMIN_TOKEN;
+    if (!token)
+      return res.status(400).json({ error: "calendarToken is required" });
     await db
       .insert(pushSubscriptionsTable)
       .values({ calendarToken: token, endpoint, p256dh: keys.p256dh, auth: keys.auth })
@@ -156,6 +161,7 @@ router.post("/push/unsubscribe", async (req, res) => {
 // calendar (we know the admin's email; other calendars don't have one on file).
 
 async function sendReminderNotifications() {
+  if (!pushConfigured) return;
   try {
     const now = new Date();
     const windowStart = new Date(now.getTime() - 15 * 60 * 1000);
@@ -243,7 +249,7 @@ async function sendReminderNotifications() {
         }
 
         // ── Email: admin calendar only ───────────────────────────────────────
-        if (meeting.calendarToken === ADMIN_TOKEN) {
+        if (ADMIN_TOKEN && REMINDER_EMAIL_TO && meeting.calendarToken === ADMIN_TOKEN) {
           try {
             const { client, fromEmail } = await getUncachableResendClient();
             await client.emails.send({

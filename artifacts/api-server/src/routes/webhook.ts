@@ -4,8 +4,8 @@ import { db, meetingsTable } from "@workspace/db";
 
 const router = Router();
 
-const API_KEY = process.env.MEETMIND_API_KEY || "ff29b04cc8e13580c3db8f804724c44a82c2af459b7b7395ccd75f5dfa10ec91";
-const ADMIN_TOKEN = "admin/ark/felixdgreat";
+const API_KEY = process.env.MEETMIND_API_KEY?.trim();
+const ADMIN_TOKEN = process.env.MEETMIND_ADMIN_CALENDAR_TOKEN?.trim();
 
 // In-memory store of the last received booking payload for debugging
 let lastBookingDebug: {
@@ -46,6 +46,7 @@ function combineDatetime(date: unknown, time: unknown, tz?: string): Date | null
 // Returns the raw body of the last booking received so we can diagnose date issues.
 // Protected by the same API key.
 router.get("/webhook/last-booking", (req, res) => {
+  if (!API_KEY) return res.status(503).json({ error: "Webhook is not configured" });
   const authHeader = req.headers["authorization"] ?? "";
   const xApiKey = req.headers["x-api-key"] ?? "";
   const provided =
@@ -72,6 +73,8 @@ router.get("/webhook/last-booking", (req, res) => {
 // The body is logged raw so we can inspect the format and tune the mapping.
 
 router.post("/webhook/booking", async (req, res) => {
+  if (!API_KEY || !ADMIN_TOKEN)
+    return res.status(503).json({ error: "Webhook is not configured" });
   // ── Auth ──────────────────────────────────────────────────────────────────
   const authHeader = req.headers["authorization"] ?? "";
   const xApiKey = req.headers["x-api-key"] ?? "";

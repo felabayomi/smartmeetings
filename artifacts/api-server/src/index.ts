@@ -32,14 +32,14 @@ async function ensureSchema() {
 
   // Add calendar_token to meetings (multi-tenant support)
   await db.execute(sql`
-    ALTER TABLE meetings
-      ADD COLUMN IF NOT EXISTS calendar_token TEXT NOT NULL DEFAULT 'admin/ark/felixdgreat'
+    ALTER TABLE meetings ADD COLUMN IF NOT EXISTS calendar_token TEXT;
+    ALTER TABLE meetings ALTER COLUMN calendar_token DROP DEFAULT
   `);
 
   // Add calendar_token to push_subscriptions
   await db.execute(sql`
-    ALTER TABLE push_subscriptions
-      ADD COLUMN IF NOT EXISTS calendar_token TEXT NOT NULL DEFAULT 'admin/ark/felixdgreat'
+    ALTER TABLE push_subscriptions ADD COLUMN IF NOT EXISTS calendar_token TEXT;
+    ALTER TABLE push_subscriptions ALTER COLUMN calendar_token DROP DEFAULT
   `);
 }
 

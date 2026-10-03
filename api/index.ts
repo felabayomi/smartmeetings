@@ -13,6 +13,27 @@ import { parseIcs, IcsError } from "../lib/ics-import.cjs";
 import { ensureImportTables, importEvents } from "../lib/ics-store.cjs";
 
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+const isProductionDeployment = process.env.VERCEL_ENV === "production";
+
+function requireSecret(name) {
+  const value = process.env[name]?.trim();
+  if (!value) throw new Error(`${name} is required`);
+  return value;
+}
+
+function validateProductionClerkConfiguration() {
+  if (!isProductionDeployment) return;
+  if (!process.env.CLERK_SECRET_KEY?.startsWith("sk_live_"))
+    throw new Error("Production requires a Clerk live CLERK_SECRET_KEY");
+  const publishableKey =
+    process.env.CLERK_PUBLISHABLE_KEY ||
+    process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ||
+    process.env.VITE_CLERK_PUBLISHABLE_KEY;
+  if (!publishableKey?.startsWith("pk_live_"))
+    throw new Error("Production requires a Clerk live publishable key");
+}
+
+validateProductionClerkConfiguration();
 const clerk = createClerkClient({
   secretKey: process.env.CLERK_SECRET_KEY,
   publishableKey:
@@ -30,17 +51,21 @@ let schedulingReady;
 let pushReady;
 let scanStorageReady;
 
-const VAPID_PUBLIC_KEY =
-  process.env.VAPID_PUBLIC_KEY ||
-  "BM4A8xrDgKpyDmGEpDZlROCwsijp8uvy4a-EnW2zNDdCqE3FF0Idg67CwNJq2lPLsu0xl6jNBrPCYLDaylc5Ypo";
-const VAPID_PRIVATE_KEY =
-  process.env.VAPID_PRIVATE_KEY ||
-  "YzukqYDQpFl0ll7euuU3HnW0Of_0a-JRl43r_ZRqQCo";
-webPush.setVapidDetails(
-  "mailto:notifications@meetminder.app",
-  VAPID_PUBLIC_KEY,
-  VAPID_PRIVATE_KEY,
-);
+let vapidConfiguration;
+
+function ensureVapidConfiguration() {
+  if (!vapidConfiguration) {
+    const publicKey = requireSecret("VAPID_PUBLIC_KEY");
+    const privateKey = requireSecret("VAPID_PRIVATE_KEY");
+    webPush.setVapidDetails(
+      "mailto:notifications@meetminder.app",
+      publicKey,
+      privateKey,
+    );
+    vapidConfiguration = { publicKey };
+  }
+  return vapidConfiguration;
+}
 
 function ensurePushTables() {
   if (!pushReady)
@@ -114,6 +139,7 @@ async function removeExpiredUnlinkedScans(userId) {
 }
 
 async function sendPushReminders() {
+  ensureVapidConfiguration();
   await ensureImportTables(pool);
   await materializeSeries(pool);
   await ensurePushTables();
@@ -923,12 +949,10 @@ export default async function handler(request, response) {
   try {
     if (path === "/healthz") return response.status(200).json({ status: "ok" });
     if (path === "/push/vapid-key" && request.method === "GET")
-      return response.status(200).json({ publicKey: VAPID_PUBLIC_KEY });
+      return response.status(200).json(ensureVapidConfiguration());
     if (path === "/push/send-reminders" && request.method === "GET") {
-      const cronSecret = process.env.CRON_SECRET;
-      const isCron = cronSecret
-        ? request.headers.authorization === `Bearer ${cronSecret}`
-        : request.headers["user-agent"] === "vercel-cron/1.0";
+      const cronSecret = requireSecret("CRON_SECRET");
+      const isCron = request.headers.authorization === `Bearer ${cronSecret}`;
       if (!isCron && !(await authenticatedUserId(request)))
         return response.status(401).json({ error: "Unauthorized" });
       const sent = await sendPushReminders();
