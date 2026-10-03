@@ -950,456 +950,988 @@ export default async function handler(request, response) {
       return response.status(200).json({ success: true, sent });
     }
 
-    const publicBooking = path.mÛÎ÷¶‰Ëkºwµç]È]J[š]X[œ›İÜÖÌKœİ\İ[YJHH™]È]J
-JBˆ™]\›ˆ™\ÜÛœÙBˆœİ]\ÊL
-BˆšœÛÛŠÈ\œ›Üˆ•\ÈYY][™ÈØ[ˆ›ÈÛ™Ù\ˆ™H™\ØÚY[YˆJNÂˆÛÛœİ™\]Y\İYİ\H™\]Y\İ˜›ÙOËœİ\[YNÂˆYˆ
-\™\]Y\İYİ\
-Bˆ™]\›ˆ™\ÜÛœÙKœİ]\Ê
-KšœÛÛŠÈ\œ›ÜˆÚÛÜÙHH™]È[YHˆJNÂˆÛÛœİ[İÙYH]ØZ]]˜Z[X›TÛİÊ[š]X[œ›İÜÖÌK™]È]J
-KŒÂˆYY][™ÒYˆ[š]X[œ›İÜÖÌK›YY][™×ÚYˆ›ÛÚÚ[™ÒYˆ[š]X[œ›İÜÖÌKšYˆJNÂˆÛÛœİÙ[XİYH[İÙY™š[™
-ˆ
-Ûİ
-HOˆÛİœİ\[YHOOH™]È]J™\]Y\İYİ\
-KÒTÓÔİš[™Ê
-Kˆ
-NÂˆYˆ
-\Ù[XİY
-Bˆ™]\›ˆ™\ÜÛœÙBˆœİ]\ÊJBˆšœÛÛŠÈ\œ›Üˆ•][YH\È›ÈÛ™Ù\ˆ]˜Z[X›HˆJNÂˆÛÛœİÛY[H]ØZ]ÛÛ˜ÛÛ›™Xİ
+    const publicBooking = path.match(/^\/booking\/([^/]+)$/);
+    const publicSlots = path.match(/^\/booking\/([^/]+)\/slots$/);
+    if (publicSlots && request.method === "GET") {
+      const profile = await getProfileBySlug(
+        decodeURIComponent(publicSlots[1]),
+      );
+      if (!profile)
+        return response.status(404).json({ error: "Booking page not found" });
+      const slots = await availableSlots(
+        profile,
+        new Date(),
+        Number(request.query?.days || 30),
+      );
+      return response
+        .status(200)
+        .json({ profile: publicProfile(profile), slots });
+    }
+    if (publicBooking && request.method === "GET") {
+      const profile = await getProfileBySlug(
+        decodeURIComponent(publicBooking[1]),
+      );
+      if (!profile)
+        return response.status(404).json({ error: "Booking page not found" });
+      return response.status(200).json(publicProfile(profile));
+    }
+    if (publicBooking && request.method === "POST") {
+      const profile = await getProfileBySlug(
+        decodeURIComponent(publicBooking[1]),
+      );
+      if (!profile)
+        return response.status(404).json({ error: "Booking page not found" });
+      await ensurePushTables();
+      const { startTime, guestName, guestEmail, guestTimezone, notes } =
+        request.body || {};
+      if (!startTime || !guestName?.trim() || !guestEmail?.includes("@"))
+        return response
+          .status(400)
+          .json({ error: "Name, email, and a time are required" });
+      const allowed = await availableSlots(profile, new Date(), 60);
+      const selected = allowed.find(
+        (slot) => slot.startTime === new Date(startTime).toISOString(),
+      );
+      if (!selected)
+        return response
+          .status(409)
+          .json({ error: "That time is no longer available" });
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [
+          profile.user_id,
+        ]);
+        if (profile.max_bookings_per_day) {
+          const ownerDate = formatInTimeZone(
+            selected.startTime,
+            profile.timezone,
+            "yyyy-MM-dd",
+          );
+          const dayStart = fromZonedTime(
+            `${ownerDate}T00:00:00`,
+            profile.timezone,
+          );
+          const nextDate = addDays(new Date(`${ownerDate}T12:00:00Z`), 1)
+            .toISOString()
+            .slice(0, 10);
+          const dayEnd = fromZonedTime(
+            `${nextDate}T00:00:00`,
+            profile.timezone,
+          );
+          const dailyCount = await client.query(
+            "SELECT COUNT(*)::int AS count FROM bookings WHERE owner_id = $1 AND start_time >= $2 AND start_time < $3",
+            [profile.user_id, dayStart.toISOString(), dayEnd.toISOString()],
+          );
+          if (dailyCount.rows[0].count >= profile.max_bookings_per_day) {
+            await client.query("ROLLBACK");
+            return response
+              .status(409)
+              .json({ error: "This day has reached its booking limit" });
+          }
+        }
+        const conflict = await client.query(
+          "SELECT 1 FROM meetings WHERE calendar_token = $1 AND start_time < ($2::timestamptz + ($4::int * interval '1 minute')) AND COALESCE(end_time, start_time + interval '30 minutes') > ($3::timestamptz - ($4::int * interval '1 minute')) LIMIT 1",
+          [
+            profile.user_id,
+            selected.endTime,
+            selected.startTime,
+            Number(profile.buffer_minutes || 0),
+          ],
+        );
+        if (conflict.rowCount) {
+          await client.query("ROLLBACK");
+          return response
+            .status(409)
+            .json({ error: "That time was just booked" });
+        }
+        const inserted = await client.query(
+          "INSERT INTO meetings (calendar_token,title,description,start_time,end_time,timezone,organizer,notes,color) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *",
+          [
+            profile.user_id,
+            `Meeting with ${guestName.trim()}`,
+            notes || `Booked by ${guestEmail}`,
+            selected.startTime,
+            selected.endTime,
+            profile.timezone,
+            guestName.trim(),
+            `Guest: ${guestEmail}${guestTimezone ? ` â€¢ ${guestTimezone}` : ""}${notes ? `\n${notes}` : ""}`,
+            "#10b981",
+          ],
+        );
+        const manageToken = randomUUID();
+        await client.query(
+          "INSERT INTO bookings (id,owner_id,meeting_id,guest_name,guest_email,guest_timezone,notes,start_time,end_time,manage_token) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+          [
+            randomUUID(),
+            profile.user_id,
+            inserted.rows[0].id,
+            guestName.trim(),
+            guestEmail.trim(),
+            guestTimezone || null,
+            notes || null,
+            selected.startTime,
+            selected.endTime,
+            manageToken,
+          ],
+        );
+        await client.query(
+          `INSERT INTO user_notifications (user_id,type,title,body,meeting_id,dedupe_key)
+          VALUES ($1,'booking',$2,$3,$4,$5) ON CONFLICT (dedupe_key) DO NOTHING`,
+          [
+            profile.user_id,
+            "New meeting booked",
+            `${guestName.trim()} booked ${formatInTimeZone(selected.startTime, profile.timezone, "MMM d, yyyy 'at' h:mm a zzz")}`,
+            inserted.rows[0].id,
+            `booking:${inserted.rows[0].id}`,
+          ],
+        );
+        await client.query("COMMIT");
+        return response
+          .status(201)
+          .json({
+            success: true,
+            meeting: meeting(inserted.rows[0]),
+            ownerTimezone: profile.timezone,
+            manageToken,
+          });
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally {
+        client.release();
+      }
+    }
 
-NÂˆHÂˆ]ØZ]ÛY[œ]Y\J‘QÒSˆŠNÂˆ]ØZ]ÛY[œ]Y\J”ÑSPÕ×ØYš\ÛÜWŞXİÛØÚÊ\Ú^
-	JJH‹Âˆ[š]X[œ›İÜÖÌK›İÛ™\—ÚYˆJNÂˆÛÛœİØÚÙYH]ØZ]ÛY[œ]Y\Jˆ”ÑSPÕ
-ˆ”“ÓH›ÛÚÚ[™ÜÈÒT‘HX[˜YÙWİÚÙ[ˆH	HS‘YY][™×ÚYTÈ“Õ•S“ÔˆTUH‹ˆİÚÙ[—Kˆ
-NÂˆYˆ
-ˆ[ØÚÙYœ›İĞÛİ[ˆ™]È]JØÚÙYœ›İÜÖÌKœİ\İ[YJHH™]È]J
-Bˆ
-HÂˆ]ØZ]ÛY[œ]Y\J”“ÓPÒÈŠNÂˆ™]\›ˆ™\ÜÛœÙBˆœİ]\ÊL
-BˆšœÛÛŠÈ\œ›Üˆ•\ÈYY][™ÈØ[ˆ›ÈÛ™Ù\ˆ™H™\ØÚY[YˆJNÂˆBˆÛÛœİİ\œ™[HØÚÙYœ›İÜÖÌNÂˆÛÛœİ›Ùš[HH[š]X[œ›İÜÖÌNÂˆYˆ
-›Ùš[K›X^Ø›ÛÚÚ[™Ü×Ü\—Ù^JHÂˆÛÛœİİÛ™\‘]HH›Ü›X][•[YV›Û™JˆÙ[XİYœİ\[YKˆ›Ùš[K[Y^›Û™Kˆ^^^KSSKY‹ˆ
-NÂˆÛÛœİ^Tİ\Hœ›ÛV›Û™Y[YJˆ	ÛİÛ™\‘]_UŒŒˆ›Ùš[K[Y^›Û™Kˆ
-NÂˆÛÛœİ™^]HHY^\Ê™]È]J	ÛİÛ™\‘]_ULŒŒ˜
-KJBˆÒTÓÔİš[™Ê
-BˆœÛXÙJL
-NÂˆÛÛœİ^Q[™Hœ›ÛV›Û™Y[YJˆ	Û™^]_UŒŒˆ›Ùš[K[Y^›Û™Kˆ
-NÂˆÛÛœİÛİ[H]ØZ]ÛY[œ]Y\Jˆ”ÑSPÕÓÕS•
+    const bookingManagement = path.match(/^\/booking-management\/([^/]+)$/);
+    const bookingManagementSlots = path.match(
+      /^\/booking-management\/([^/]+)\/slots$/,
+    );
+    if (
+      (bookingManagement || bookingManagementSlots) &&
+      request.method === "GET"
+    ) {
+      await ensureSchedulingTables();
+      const token = decodeURIComponent(
+        (bookingManagementSlots || bookingManagement)[1],
+      );
+      const result = await pool.query(
+        `SELECT booking.*, profile.user_id, profile.slug, profile.display_name, profile.timezone,
+        profile.duration_minutes, profile.buffer_minutes, profile.always_available,
+        profile.max_bookings_per_day, profile.availability, profile.blackouts
+        FROM bookings booking JOIN scheduling_profiles profile ON profile.user_id = booking.owner_id
+        WHERE booking.manage_token = $1 AND booking.meeting_id IS NOT NULL`,
+        [token],
+      );
+      if (!result.rowCount)
+        return response
+          .status(404)
+          .json({ error: "Rescheduling link not found" });
+      const booking = result.rows[0];
+      if (new Date(booking.start_time) <= new Date())
+        return response
+          .status(410)
+          .json({
+            error:
+              "This meeting has started or passed and can no longer be rescheduled",
+          });
+      const payload = {
+        profile: publicProfile(booking),
+        booking: {
+          guestName: booking.guest_name,
+          startTime: booking.start_time,
+          endTime: booking.end_time,
+        },
+      };
+      if (bookingManagementSlots) {
+        payload.slots = await availableSlots(
+          booking,
+          new Date(),
+          Number(request.query?.days || 30),
+          { meetingId: booking.meeting_id, bookingId: booking.id },
+        );
+      }
+      return response.status(200).json(payload);
+    }
+    if (
+      bookingManagement &&
+      (request.method === "POST" || request.method === "PUT")
+    ) {
+      await ensureSchedulingTables();
+      const token = decodeURIComponent(bookingManagement[1]);
+      const initial = await pool.query(
+        `SELECT booking.*, profile.user_id, profile.slug, profile.display_name, profile.timezone,
+        profile.duration_minutes, profile.buffer_minutes, profile.always_available,
+        profile.max_bookings_per_day, profile.availability, profile.blackouts
+        FROM bookings booking JOIN scheduling_profiles profile ON profile.user_id = booking.owner_id
+        WHERE booking.manage_token = $1 AND booking.meeting_id IS NOT NULL`,
+        [token],
+      );
+      if (!initial.rowCount)
+        return response
+          .status(404)
+          .json({ error: "Rescheduling link not found" });
+      if (new Date(initial.rows[0].start_time) <= new Date())
+        return response
+          .status(410)
+          .json({ error: "This meeting can no longer be rescheduled" });
+      const requestedStart = request.body?.startTime;
+      if (!requestedStart)
+        return response.status(400).json({ error: "Choose a new time" });
+      const allowed = await availableSlots(initial.rows[0], new Date(), 60, {
+        meetingId: initial.rows[0].meeting_id,
+        bookingId: initial.rows[0].id,
+      });
+      const selected = allowed.find(
+        (slot) => slot.startTime === new Date(requestedStart).toISOString(),
+      );
+      if (!selected)
+        return response
+          .status(409)
+          .json({ error: "That time is no longer available" });
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [
+          initial.rows[0].owner_id,
+        ]);
+        const locked = await client.query(
+          "SELECT * FROM bookings WHERE manage_token = $1 AND meeting_id IS NOT NULL FOR UPDATE",
+          [token],
+        );
+        if (
+          !locked.rowCount ||
+          new Date(locked.rows[0].start_time) <= new Date()
+        ) {
+          await client.query("ROLLBACK");
+          return response
+            .status(410)
+            .json({ error: "This meeting can no longer be rescheduled" });
+        }
+        const current = locked.rows[0];
+        const profile = initial.rows[0];
+        if (profile.max_bookings_per_day) {
+          const ownerDate = formatInTimeZone(
+            selected.startTime,
+            profile.timezone,
+            "yyyy-MM-dd",
+          );
+          const dayStart = fromZonedTime(
+            `${ownerDate}T00:00:00`,
+            profile.timezone,
+          );
+          const nextDate = addDays(new Date(`${ownerDate}T12:00:00Z`), 1)
+            .toISOString()
+            .slice(0, 10);
+          const dayEnd = fromZonedTime(
+            `${nextDate}T00:00:00`,
+            profile.timezone,
+          );
+          const count = await client.query(
+            "SELECT COUNT(*)::int AS count FROM bookings WHERE owner_id = $1 AND id <> $2 AND start_time >= $3 AND start_time < $4",
+            [
+              profile.user_id,
+              current.id,
+              dayStart.toISOString(),
+              dayEnd.toISOString(),
+            ],
+          );
+          if (count.rows[0].count >= profile.max_bookings_per_day) {
+            await client.query("ROLLBACK");
+            return response
+              .status(409)
+              .json({ error: "This day has reached its booking limit" });
+          }
+        }
+        const conflict = await client.query(
+          "SELECT 1 FROM meetings WHERE calendar_token = $1 AND id <> $2 AND start_time < ($3::timestamptz + ($5::int * interval '1 minute')) AND COALESCE(end_time, start_time + interval '30 minutes') > ($4::timestamptz - ($5::int * interval '1 minute')) LIMIT 1",
+          [
+            profile.user_id,
+            current.meeting_id,
+            selected.endTime,
+            selected.startTime,
+            Number(profile.buffer_minutes || 0),
+          ],
+        );
+        if (conflict.rowCount) {
+          await client.query("ROLLBACK");
+          return response
+            .status(409)
+            .json({ error: "That time was just booked" });
+        }
+        await client.query(
+          "UPDATE meetings SET start_time = $1, end_time = $2, timezone = $3, updated_at = NOW() WHERE id = $4 AND calendar_token = $5",
+          [
+            selected.startTime,
+            selected.endTime,
+            profile.timezone,
+            current.meeting_id,
+            profile.user_id,
+          ],
+        );
+        await client.query(
+          "UPDATE bookings SET start_time = $1, end_time = $2 WHERE id = $3",
+          [selected.startTime, selected.endTime, current.id],
+        );
+        await client.query("COMMIT");
+        return response
+          .status(200)
+          .json({
+            success: true,
+            profile: publicProfile(profile),
+            booking: {
+              guestName: current.guest_name,
+              startTime: selected.startTime,
+              endTime: selected.endTime,
+            },
+          });
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally {
+        client.release();
+      }
+    }
 
-ŠNš[TÈÛİ[”“ÓH›ÛÚÚ[™ÜÈÒT‘HİÛ™\—ÚYH	HS‘Yˆ	ˆS‘İ\İ[YHH	ÈS‘İ\İ[YH	‹ˆÂˆ›Ùš[K\Ù\—ÚYˆİ\œ™[šYˆ^Tİ\ÒTÓÔİš[™Ê
-Kˆ^Q[™ÒTÓÔİš[™Ê
-KˆKˆ
-NÂˆYˆ
-Ûİ[œ›İÜÖÌK˜Ûİ[H›Ùš[K›X^Ø›ÛÚÚ[™Ü×Ü\—Ù^JHÂˆ]ØZ]ÛY[œ]Y\J”“ÓPÒÈŠNÂˆ™]\›ˆ™\ÜÛœÙBˆœİ]\ÊJBˆšœÛÛŠÈ\œ›Üˆ•\È^H\È™XXÚY]È›ÛÚÚ[™È[Z]ˆJNÂˆBˆBˆÛÛœİÛÛ™›XİH]ØZ]ÛY[œ]Y\Jˆ”ÑSPÕH”“ÓHYY][™ÜÈÒT‘HØ[[™\—İÚÙ[ˆH	HS‘Yˆ	ˆS‘İ\İ[YH
-	Î[Y\İ[\ˆ
-È
-	Nš[
-ˆ[\˜[	ÌHZ[]IÊJHS‘ÓĞSTĞÑJ[™İ[YKİ\İ[YH
-È[\˜[	ÌÌZ[]\ÉÊHˆ
-	[Y\İ[\ˆH
-	Nš[
-ˆ[\˜[	ÌHZ[]IÊJHSRUH‹ˆÂˆ›Ùš[K\Ù\—ÚYˆİ\œ™[›YY][™×ÚYˆÙ[XİY™[™[YKˆÙ[XİYœİ\[YKˆ[X™\Š›Ùš[K˜Y™™\—ÛZ[]\È
-KˆKˆ
-NÂˆYˆ
-ÛÛ™›Xİœ›İĞÛİ[
-HÂˆ]ØZ]ÛY[œ]Y\J”“ÓPÒÈŠNÂˆ™]\›ˆ™\ÜÛœÙBˆœİ]\ÊJBˆšœÛÛŠÈ\œ›Üˆ•][YHØ\È\İ›ÛÚÙYˆJNÂˆBˆ]ØZ]ÛY[œ]Y\Jˆ•TUHYY][™ÜÈÑUİ\İ[YHH	K[™İ[YHH	‹[Y^›Û™HH	Ë\]YØ]H“ÕÊ
-HÒT‘HYH	S‘Ø[[™\—İÚÙ[ˆH	H‹ˆÂˆÙ[XİYœİ\[YKˆÙ[XİY™[™[YKˆ›Ùš[K[Y^›Û™Kˆİ\œ™[›YY][™×ÚYˆ›Ùš[K\Ù\—ÚYˆKˆ
-NÂˆ]ØZ]ÛY[œ]Y\Jˆ•TUH›ÛÚÚ[™ÜÈÑUİ\İ[YHH	K[™İ[YHH	ˆÒT‘HYH	È‹ˆÜÙ[XİYœİ\[YKÙ[XİY™[™[YKİ\œ™[šYKˆ
-NÂˆ]ØZ]ÛY[œ]Y\JÓÓSRUŠNÂˆ™]\›ˆ™\ÜÛœÙBˆœİ]\ÊŒ
-BˆšœÛÛŠÂˆİXØÙ\ÜÎˆYKˆ›Ùš[NˆX›XÔ›Ùš[J›Ùš[JKˆ›ÛÚÚ[™ÎˆÂˆİY\İ˜[YNˆİ\œ™[™İY\İÛ˜[YKˆİ\[YNˆÙ[XİYœİ\[YKˆ[™[YNˆÙ[XİY™[™[YKˆKˆJNÂˆHØ]Ú
-\œ›ÜŠHÂˆ]ØZ]ÛY[œ]Y\J”“ÓPÒÈŠNÂˆ›İÈ\œ›ÜÂˆHš[˜[HÂˆÛY[œ™[X\ÙJ
-NÂˆBˆB‚ˆÛÛœİX›XÔÛH]›X]Ú
-×—ÜÛ×Ê×‹×JÊIÊNÂˆÛÛœİÛ™\ÜÛœÙHH]›X]Ú
-×—ÜÛ×Ê×‹×JÊWÜ™\ÜÛœÙ\ÉÊNÂˆYˆ
-X›XÔÛ	‰ˆ™\]Y\İ›Y]ÙOOH‘ÑUŠHÂˆ]ØZ][œİ\™TØÚY[[™ÕX›\Ê
-NÂˆÛÛœİ™\İ[H]ØZ]ÛÛœ]Y\Jˆ”ÑSPÕ
-ˆ”“ÓHØÚY[[™×ÜÛÈÒT‘HÛYÈH	H‹ˆÙXÛÙUT’PÛÛ\Û™[
-X›XÔÛÌWJWKˆ
-NÂˆYˆ
-\™\İ[œ›İĞÛİ[
-Bˆ™]\›ˆ™\ÜÛœÙKœİ]\Ê
-KšœÛÛŠÈ\œ›Üˆ”Û›İ›İ[™ˆJNÂˆÛÛœİ™\ÜÛœÙ\ÈH]ØZ]ÛÛœ]Y\Jˆ”ÑSPÕÙ[Xİ[ÛœÈ”“ÓHÛÜ™\ÜÛœÙ\ÈÒT‘HÛÚYH	H‹ˆÜ™\İ[œ›İÜÖÌKšYKˆ
-NÂˆ™]\›ˆ™\ÜÛœÙBˆœİ]\ÊŒ
-BˆšœÛÛŠÛ^[ØY
-™\İ[œ›İÜÖÌK™\ÜÛœÙ\Ëœ›İÜÊJNÂˆBˆYˆ
-Û™\ÜÛœÙH	‰ˆ™\]Y\İ›Y]ÙOOH”ÔÕŠHÂˆ]ØZ][œİ\™TØÚY[[™ÕX›\Ê
-NÂˆÛÛœİÛH]ØZ]ÛÛœ]Y\Jˆ”ÑSPÕ
-ˆ”“ÓHØÚY[[™×ÜÛÈÒT‘HÛYÈH	H‹ˆÙXÛÙUT’PÛÛ\Û™[
-Û™\ÜÛœÙVÌWJWKˆ
-NÂˆYˆ
-\Ûœ›İĞÛİ[Ûœ›İÜÖÌKœİ]\ÈOOH›Ü[ˆŠBˆ™]\›ˆ™\ÜÛœÙKœİ]\Ê
-KšœÛÛŠÈ\œ›Üˆ•\ÈÛ\È›İÜ[ˆˆJNÂˆÛÛœİÂˆ\XÚ\[˜[YKˆ\XÚ\[[XZ[ˆ\XÚ\[[Y^›Û™KˆÙ[Xİ[ÛœËˆHH™\]Y\İ˜›ÙHßNÂˆÛÛœİ˜[YBˆ\œ˜^Kš\Ğ\œ˜^JÙ[Xİ[ÛœÊH	‰‚ˆÙ[Xİ[ÛœË™š[\Š
-Ü[ÛŠHOˆÛœ›İÜÖÌK›Ü[ÛœËš[˜ÛY\ÊÜ[ÛŠJNÂˆYˆ
-\\XÚ\[˜[YOËš[J
-H]˜[YË›[™İ
-Bˆ™]\›ˆ™\ÜÛœÙBˆœİ]\Ê
-BˆšœÛÛŠÂˆ\œ›Üˆ–[İ\ˆ˜[YH[™]X\İÛ™H]˜Z[X›H[YH\™H™\]Z\™Y‹ˆJNÂˆ]ØZ]ÛÛœ]Y\Jˆ’S”ÑT•S•ÈÛÜ™\ÜÛœÙ\È
-YÛÚY\XÚ\[Û˜[YK\XÚ\[Ù[XZ[\XÚ\[İ[Y^›Û™KÙ[Xİ[ÛœÊHSQTÈ
-	K	‹	Ë		K	ŠH‹ˆÂˆ˜[™ÛUURQ
+    const publicPoll = path.match(/^\/polls\/([^/]+)$/);
+    const pollResponse = path.match(/^\/polls\/([^/]+)\/responses$/);
+    if (publicPoll && request.method === "GET") {
+      await ensureSchedulingTables();
+      const result = await pool.query(
+        "SELECT * FROM scheduling_polls WHERE slug = $1",
+        [decodeURIComponent(publicPoll[1])],
+      );
+      if (!result.rowCount)
+        return response.status(404).json({ error: "Poll not found" });
+      const responses = await pool.query(
+        "SELECT selections FROM poll_responses WHERE poll_id = $1",
+        [result.rows[0].id],
+      );
+      return response
+        .status(200)
+        .json(pollPayload(result.rows[0], responses.rows));
+    }
+    if (pollResponse && request.method === "POST") {
+      await ensureSchedulingTables();
+      const poll = await pool.query(
+        "SELECT * FROM scheduling_polls WHERE slug = $1",
+        [decodeURIComponent(pollResponse[1])],
+      );
+      if (!poll.rowCount || poll.rows[0].status !== "open")
+        return response.status(404).json({ error: "This poll is not open" });
+      const {
+        participantName,
+        participantEmail,
+        participantTimezone,
+        selections,
+      } = request.body || {};
+      const valid =
+        Array.isArray(selections) &&
+        selections.filter((option) => poll.rows[0].options.includes(option));
+      if (!participantName?.trim() || !valid?.length)
+        return response
+          .status(400)
+          .json({
+            error: "Your name and at least one available time are required",
+          });
+      await pool.query(
+        "INSERT INTO poll_responses (id,poll_id,participant_name,participant_email,participant_timezone,selections) VALUES ($1,$2,$3,$4,$5,$6)",
+        [
+          randomUUID(),
+          poll.rows[0].id,
+          participantName.trim(),
+          participantEmail || null,
+          participantTimezone || null,
+          JSON.stringify(valid),
+        ],
+      );
+      return response.status(201).json({ success: true });
+    }
 
-KˆÛœ›İÜÖÌKšYˆ\XÚ\[˜[YKš[J
-Kˆ\XÚ\[[XZ[[ˆ\XÚ\[[Y^›Û™H[ˆ”ÓÓ‹œİš[™ÚYJ˜[Y
-KˆKˆ
-NÂˆ™]\›ˆ™\ÜÛœÙKœİ]\ÊŒJKšœÛÛŠÈİXØÙ\ÜÎˆYHJNÂˆB‚ˆÛÛœİ\Ù\’YH]ØZ]]][XØ]Y\Ù\’Y
-™\]Y\İ
-NÂˆYˆ
-]\Ù\’Y
-Bˆ™]\›ˆ™\ÜÛœÙKœİ]\ÊJKšœÛÛŠÈ\œ›Üˆ”ÚYÛˆ[ˆ™\]Z\™YˆJNÂ‚ˆYˆ
-]œİ\ÕÚ]
-‹ÛYY][™ÜÈŠJH]ØZ][œİ\™R[\ÜX›\ÊÛÛ
-NÂˆYˆ
+    const userId = await authenticatedUserId(request);
+    if (!userId)
+      return response.status(401).json({ error: "Sign in required" });
 
-]OOH‹ÛYY][™ÜËÚ[\Ü\™]šY]Èˆ]OOH‹ÛYY][™ÜËÚ[\ÜŠH	‰ˆ™\]Y\İ›Y]ÙOOH”ÔÕŠHÂˆÛÛœİÈ^[Y^›Û™KÙ[XİYZYËÛÛ™š\›YYHH™\]Y\İ˜›ÙHßNÂˆÛÛœİ™]šY]ÈH\œÙRXÜÊ^[Y^›Û™JNÂˆYˆ
-]OOH‹ÛYY][™ÜËÚ[\Ü\™]šY]ÈŠHÂˆÛÛœİš[ÜˆH]ØZ]ÛÛœ]Y\J”ÑSPÕZY”“ÓHØ[[™\—Ú[\ÜÈÒT‘HİÛ™\—ÚYIHS‘ZYPS–J	^×JH‹İ\Ù\’Y™]šY]Ë™]™[Ë›X\
-]™[O™]™[ZY
-WJNÂˆÛÛœİ[\ÜYH™]ÈÙ]
-š[Ü‹œ›İÜË›X\
-›İÏOœ›İËZY
-JNÂˆ™]\›ˆ™\ÜÛœÙKœİ]\ÊŒ
-KšœÛÛŠË‹‹œ™]šY]Ë]™[Îœ™]šY]Ë™]™[Ë›X\
-]™[OŠË‹‹™]™[[™XYR[\ÜYš[\ÜYš\Ê]™[ZY
-_JJ_JNÂˆBˆYˆ
-ÛÛ™š\›YYOOHYHP\œ˜^Kš\Ğ\œ˜^JÙ[XİYZYÊH\Ù[XİYZYË›[™İÙ[XİYZYË›[™İŒŒ
-Bˆ™]\›ˆ™\ÜÛœÙKœİ]\Ê
-KšœÛÛŠÙ\œ›Üˆ”™]šY]ÈH™]šY]È[™ÛÛ™š\›HÚXÚ]™[ÈÈ[\ÜˆŸJNÂˆÛÛœİÙ[XİYH™]ÈÙ]
-Ù[XİYZYÊNÂˆÛÛœİ]™[ÈH™]šY]Ë™]™[Ë™š[\Š]™[OœÙ[XİYš\Ê]™[ZY
-JNÂˆYˆ
-]™[Ë›[™İOOHÙ[XİYœÚ^™JH™]\›ˆ™\ÜÛœÙKœİ]\Ê
-KšœÛÛŠÙ\œ›Üˆ”ÛÛYHÙ[XİY[šY\È\™H›ÈÛ™Ù\ˆ˜[Yˆ™]šY]ÈYØZ[‹ˆŸJNÂˆ™]\›ˆ™\ÜÛœÙKœİ]\ÊŒ
-KšœÛÛŠ]ØZ][\Ü]™[ÊÛÛ\Ù\’Y]™[ÊJNÂˆB‚ˆYˆ
-]OOH‹Ü\ÚÜİXœØÜšX™Hˆ	‰ˆ™\]Y\İ›Y]ÙOOH”ÔÕŠHÂˆ]ØZ][œİ\™T\ÚX›\Ê
-NÂˆÛÛœİÈ[™Ú[Ù^\ÈHH™\]Y\İ˜›ÙHßNÂˆYˆ
-Y[™Ú[ZÙ^\ÏËœM™ZÙ^\ÏË˜]]
-Bˆ™]\›ˆ™\ÜÛœÙBˆœİ]\Ê
-BˆšœÛÛŠÈ\œ›Üˆ’[˜[Y\ÚİXœØÜš\[ÛˆˆJNÂˆ]ØZ]ÛÛœ]Y\JˆS”ÑT•S•È\ÚÜİXœØÜš\[ÛœÈ
-[™Ú[Ø[[™\—İÚÙ[‹M™]]
-BˆSQTÈ
-	K	‹	Ë	
-HÓˆÓÓ‘“PÕ
-[™Ú[
-HÈTUHÑUØ[[™\—İÚÙ[QVÓQQ˜Ø[[™\—İÚÙ[‹M™QVÓQQœM™]]QVÓQQ˜]]ˆÙ[™Ú[\Ù\’YÙ^\ËœM™Ù^\Ë˜]]Kˆ
-NÂˆ™]\›ˆ™\ÜÛœÙKœİ]\ÊŒ
-KšœÛÛŠÈİXØÙ\ÜÎˆYHJNÂˆBˆYˆ
-]OOH‹Ü\Úİ[œİXœØÜšX™Hˆ	‰ˆ™\]Y\İ›Y]ÙOOH”ÔÕŠHÂˆ]ØZ][œİ\™T\ÚX›\Ê
-NÂˆÛÛœİ[™Ú[H™\]Y\İ˜›ÙOË™[™Ú[ÂˆYˆ
-[™Ú[
-Bˆ]ØZ]ÛÛœ]Y\Jˆ‘SUH”“ÓH\ÚÜİXœØÜš\[ÛœÈÒT‘H[™Ú[H	HS‘Ø[[™\—İÚÙ[ˆH	ˆ‹ˆÙ[™Ú[\Ù\’YKˆ
-NÂˆ™]\›ˆ™\ÜÛœÙKœİ]\ÊŒ
-KšœÛÛŠÈİXØÙ\ÜÎˆYHJNÂˆB‚ˆYˆ
-]OOH‹Û›İYšXØ][ÛœÈˆ	‰ˆ™\]Y\İ›Y]ÙOOH‘ÑUŠHÂˆ]ØZ][œİ\™T\ÚX›\Ê
-NÂˆÛÛœİ™\İ[H]ØZ]ÛÛœ]Y\JˆÑSPÕY\K]K›ÙKYY][™×ÚYÜ™X]YØ]™XYØ]ˆ”“ÓH\Ù\—Û›İYšXØ][ÛœÈÒT‘H\Ù\—ÚYH	HÔ‘Tˆ–HÜ™X]YØ]TĞÈSRULˆİ\Ù\’YKˆ
-NÂˆ™]\›ˆ™\ÜÛœÙKœİ]\ÊŒ
-KšœÛÛŠÂˆ›İYšXØ][ÛœÎˆ™\İ[œ›İÜË›X\
+    if (path.startsWith("/meetings")) await ensureImportTables(pool);
+    if ((path === "/meetings/import-preview" || path === "/meetings/import") && request.method === "POST") {
+      const { text, timezone, selectedUids, confirmed } = request.body || {};
+      const preview = parseIcs(text, timezone);
+      if (path === "/meetings/import-preview") {
+        const prior = await pool.query("SELECT uid FROM calendar_imports WHERE owner_id=$1 AND uid=ANY($2::text[])",[userId,preview.events.map(event=>event.uid)]);
+        const imported = new Set(prior.rows.map(row=>row.uid));
+        return response.status(200).json({...preview,events:preview.events.map(event=>({...event,alreadyImported:imported.has(event.uid)}))});
+      }
+      if (confirmed !== true || !Array.isArray(selectedUids) || !selectedUids.length || selectedUids.length>200)
+        return response.status(400).json({error:"Review the preview and confirm which events to import."});
+      const selected = new Set(selectedUids);
+      const events = preview.events.filter(event=>selected.has(event.uid));
+      if (events.length !== selected.size) return response.status(400).json({error:"Some selected entries are no longer valid. Preview again."});
+      return response.status(200).json(await importEvents(pool,userId,events));
+    }
 
-›İÊHOˆ
-ÂˆYˆİš[™Ê›İËšY
-Kˆ\Nˆ›İË\Kˆ]Nˆ›İË]Kˆ›ÙNˆ›İË˜›ÙKˆYY][™ÒYˆ›İË›YY][™×ÚYˆÜ™X]Y]ˆ›İË˜Ü™X]YØ]ˆ™XY]ˆ›İËœ™XYØ]ˆJJKˆ[œ™XYÛİ[ˆ™\İ[œ›İÜË™š[\Š
-›İÊHOˆ\›İËœ™XYØ]
-K›[™İˆJNÂˆBˆYˆ
-]OOH‹Û›İYšXØ][ÛœËÜ™XYˆ	‰ˆ™\]Y\İ›Y]ÙOOH”ÔÕŠHÂˆ]ØZ][œİ\™T\ÚX›\Ê
-NÂˆ]ØZ]ÛÛœ]Y\Jˆ•TUH\Ù\—Û›İYšXØ][ÛœÈÑU™XYØ]HÓĞSTĞÑJ™XYØ]“ÕÊ
-JHÒT‘H\Ù\—ÚYH	HS‘™XYØ]TÈ•S‹ˆİ\Ù\’YKˆ
-NÂˆ™]\›ˆ™\ÜÛœÙKœİ]\ÊŒ
-KšœÛÛŠÈİXØÙ\ÜÎˆYHJNÂˆB‚ˆYˆ
-]OOH‹Ü™XÙZ]™YX›ÛÚÚ[™ÜÈˆ	‰ˆ™\]Y\İ›Y]ÙOOH‘ÑUŠHÂˆ]ØZ][œİ\™TØÚY[[™ÕX›\Ê
-NÂˆÛÛœİ™\İ[H]ØZ]ÛÛœ]Y\JˆÑSPÕ›ÛÚÚ[™ËšY›ÛÚÚ[™Ë›YY][™×ÚY›ÛÚÚ[™Ë™İY\İÛ˜[YK›ÛÚÚ[™Ë™İY\İÙ[XZ[ˆ›ÛÚÚ[™Ë™İY\İİ[Y^›Û™K›ÛÚÚ[™Ë››İ\Ë›ÛÚÚ[™Ëœİ\İ[YK›ÛÚÚ[™Ë™[™İ[YK›ÛÚÚ[™Ë˜Ü™X]YØ]ˆ›Ùš[K[Y^›Û™HTÈİÛ™\—İ[Y^›Û™Bˆ”“ÓH›ÛÚÚ[™ÜÈ›ÛÚÚ[™Âˆ“ÒSˆØÚY[[™×Ü›Ùš[\È›Ùš[HÓˆ›Ùš[K\Ù\—ÚYX›ÛÚÚ[™Ë›İÛ™\—ÚYˆÒT‘H›ÛÚÚ[™Ë›İÛ™\—ÚYIHS‘›ÛÚÚ[™Ë›YY][™×ÚYTÈ“Õ•SˆÔ‘Tˆ–H›ÛÚÚ[™Ëœİ\İ[YXˆİ\Ù\’YKˆ
-NÂˆ™]\›ˆ™\ÜÛœÙKœİ]\ÊŒ
-KšœÛÛŠˆ™\İ[œ›İÜË›X\
+    if (path === "/push/subscribe" && request.method === "POST") {
+      await ensurePushTables();
+      const { endpoint, keys } = request.body || {};
+      if (!endpoint || !keys?.p256dh || !keys?.auth)
+        return response
+          .status(400)
+          .json({ error: "Invalid push subscription" });
+      await pool.query(
+        `INSERT INTO push_subscriptions (endpoint, calendar_token, p256dh, auth)
+        VALUES ($1,$2,$3,$4) ON CONFLICT (endpoint) DO UPDATE SET calendar_token=EXCLUDED.calendar_token,p256dh=EXCLUDED.p256dh,auth=EXCLUDED.auth`,
+        [endpoint, userId, keys.p256dh, keys.auth],
+      );
+      return response.status(200).json({ success: true });
+    }
+    if (path === "/push/unsubscribe" && request.method === "POST") {
+      await ensurePushTables();
+      const endpoint = request.body?.endpoint;
+      if (endpoint)
+        await pool.query(
+          "DELETE FROM push_subscriptions WHERE endpoint = $1 AND calendar_token = $2",
+          [endpoint, userId],
+        );
+      return response.status(200).json({ success: true });
+    }
 
-›İÊHOˆ
-ÂˆYˆ›İËšYˆYY][™ÒYˆ›İË›YY][™×ÚYˆİY\İ˜[YNˆ›İË™İY\İÛ˜[YKˆİY\İ[XZ[ˆ›İË™İY\İÙ[XZ[ˆİY\İ[Y^›Û™Nˆ›İË™İY\İİ[Y^›Û™KˆİÛ™\•[Y^›Û™Nˆ›İË›İÛ™\—İ[Y^›Û™Kˆ›İ\Îˆ›İË››İ\Ëˆİ\[YNˆ›İËœİ\İ[YKˆ[™[YNˆ›İË™[™İ[YKˆÜ™X]Y]ˆ›İË˜Ü™X]YØ]ˆJJKˆ
-NÂˆB‚ˆYˆ
-]OOH‹ÙİY\İX›ÛÚÚ[™ÜÈˆ	‰ˆ™\]Y\İ›Y]ÙOOH‘ÑUŠHÂˆ]ØZ][œİ\™TØÚY[[™ÕX›\Ê
-NÂˆÛÛœİÛ\šÕ\Ù\ˆH]ØZ]Û\šË\Ù\œË™Ù]\Ù\Š\Ù\’Y
-NÂˆÛÛœİ™\šYšYY[XZ[ÈHÛ\šÕ\Ù\‹™[XZ[Y™\ÜÙ\Âˆ™š[\Š
-][JHOˆ][K™\šYšXØ][ÛËœİ]\ÈOOH™\šYšYYŠBˆ›X\
+    if (path === "/notifications" && request.method === "GET") {
+      await ensurePushTables();
+      const result = await pool.query(
+        `SELECT id,type,title,body,meeting_id,created_at,read_at
+        FROM user_notifications WHERE user_id = $1 ORDER BY created_at DESC LIMIT 50`,
+        [userId],
+      );
+      return response.status(200).json({
+        notifications: result.rows.map((row) => ({
+          id: String(row.id),
+          type: row.type,
+          title: row.title,
+          body: row.body,
+          meetingId: row.meeting_id,
+          createdAt: row.created_at,
+          readAt: row.read_at,
+        })),
+        unreadCount: result.rows.filter((row) => !row.read_at).length,
+      });
+    }
+    if (path === "/notifications/read" && request.method === "POST") {
+      await ensurePushTables();
+      await pool.query(
+        "UPDATE user_notifications SET read_at = COALESCE(read_at, NOW()) WHERE user_id = $1 AND read_at IS NULL",
+        [userId],
+      );
+      return response.status(200).json({ success: true });
+    }
 
-][JHOˆ][K™[XZ[Y™\ÜËÓİÙ\Ø\ÙJ
-JNÂˆYˆ
-]™\šYšYY[XZ[Ë›[™İ
-Bˆ™]\›ˆ™\ÜÛœÙBˆœİ]\ÊÊBˆšœÛÛŠÈ\œ›Üˆ•™\šYH[İ\ˆXØÛİ[[XZ[È™XÛİ™\ˆ›ÛÚÚ[™ÜÈˆJNÂˆÛÛœİ™\İ[H]ØZ]ÛÛœ]Y\JˆÑSPÕ›ÛÚÚ[™ËšY›ÛÚÚ[™Ë›X[˜YÙWİÚÙ[‹›ÛÚÚ[™Ëœİ\İ[YK›ÛÚÚ[™Ë™[™İ[YKˆ›ÛÚÚ[™Ë™İY\İÛ˜[YK›ÛÚÚ[™Ë™İY\İÙ[XZ[›Ùš[K™\Ü^WÛ˜[YK›Ùš[K[Y^›Û™Bˆ”“ÓH›ÛÚÚ[™ÜÈ›ÛÚÚ[™È“ÒSˆØÚY[[™×Ü›Ùš[\È›Ùš[HÓˆ›Ùš[K\Ù\—ÚYH›ÛÚÚ[™Ë›İÛ™\—ÚYˆÒT‘HÕÑTŠ›ÛÚÚ[™Ë™İY\İÙ[XZ[
-HHS–J	N^×JHS‘›ÛÚÚ[™Ë›YY][™×ÚYTÈ“Õ•SˆÔ‘Tˆ–H›ÛÚÚ[™Ëœİ\İ[YXˆİ™\šYšYY[XZ[×Kˆ
-NÂˆ™]\›ˆ™\ÜÛœÙKœİ]\ÊŒ
-KšœÛÛŠˆ™\İ[œ›İÜË›X\
+    if (path === "/received-bookings" && request.method === "GET") {
+      await ensureSchedulingTables();
+      const result = await pool.query(
+        `SELECT booking.id,booking.meeting_id,booking.guest_name,booking.guest_email,
+          booking.guest_timezone,booking.notes,booking.start_time,booking.end_time,booking.created_at,
+          profile.timezone AS owner_timezone
+        FROM bookings booking
+        JOIN scheduling_profiles profile ON profile.user_id=booking.owner_id
+        WHERE booking.owner_id=$1 AND booking.meeting_id IS NOT NULL
+        ORDER BY booking.start_time`,
+        [userId],
+      );
+      return response.status(200).json(
+        result.rows.map((row) => ({
+          id: row.id,
+          meetingId: row.meeting_id,
+          guestName: row.guest_name,
+          guestEmail: row.guest_email,
+          guestTimezone: row.guest_timezone,
+          ownerTimezone: row.owner_timezone,
+          notes: row.notes,
+          startTime: row.start_time,
+          endTime: row.end_time,
+          createdAt: row.created_at,
+        })),
+      );
+    }
 
-›İÊHOˆ
-ÂˆYˆ›İËšYˆX[˜YÙUÚÙ[ˆ›İË›X[˜YÙWİÚÙ[‹ˆİY\İ˜[YNˆ›İË™İY\İÛ˜[YKˆİY\İ[XZ[ˆ›İË™İY\İÙ[XZ[ˆÜİ˜[YNˆ›İË™\Ü^WÛ˜[YKˆİÛ™\•[Y^›Û™Nˆ›İË[Y^›Û™Kˆİ\[YNˆ›İËœİ\İ[YKˆ[™[YNˆ›İË™[™İ[YKˆJJKˆ
-NÂˆB‚ˆYˆ
-]OOH‹ÜØÚY[[™ËÜ›Ùš[Hˆ	‰ˆ™\]Y\İ›Y]ÙOOH‘ÑUŠHÂˆ]ØZ][œİ\™TØÚY[[™ÕX›\Ê
-NÂˆÛÛœİ^\İ[™ÈH]ØZ]ÛÛœ]Y\Jˆ”ÑSPÕ
-ˆ”“ÓHØÚY[[™×Ü›Ùš[\ÈÒT‘H\Ù\—ÚYH	H‹ˆİ\Ù\’YKˆ
-NÂˆYˆ
-Y^\İ[™Ëœ›İĞÛİ[
-H™]\›ˆ™\ÜÛœÙKœİ]\ÊŒ
-KšœÛÛŠ[
-NÂˆÛÛœİ›İÈH^\İ[™Ëœ›İÜÖÌNÂˆÛÛœİ]˜Z[Xš[]HH›İË˜[Ø^\×Ø]˜Z[X›BˆÈY˜][]˜Z[Xš[]K›X\
+    if (path === "/guest-bookings" && request.method === "GET") {
+      await ensureSchedulingTables();
+      const clerkUser = await clerk.users.getUser(userId);
+      const verifiedEmails = clerkUser.emailAddresses
+        .filter((item) => item.verification?.status === "verified")
+        .map((item) => item.emailAddress.toLowerCase());
+      if (!verifiedEmails.length)
+        return response
+          .status(403)
+          .json({ error: "Verify your account email to recover bookings" });
+      const result = await pool.query(
+        `SELECT booking.id, booking.manage_token, booking.start_time, booking.end_time,
+        booking.guest_name, booking.guest_email, profile.display_name, profile.timezone
+        FROM bookings booking JOIN scheduling_profiles profile ON profile.user_id = booking.owner_id
+        WHERE LOWER(booking.guest_email) = ANY($1::text[]) AND booking.meeting_id IS NOT NULL
+        ORDER BY booking.start_time`,
+        [verifiedEmails],
+      );
+      return response.status(200).json(
+        result.rows.map((row) => ({
+          id: row.id,
+          manageToken: row.manage_token,
+          guestName: row.guest_name,
+          guestEmail: row.guest_email,
+          hostName: row.display_name,
+          ownerTimezone: row.timezone,
+          startTime: row.start_time,
+          endTime: row.end_time,
+        })),
+      );
+    }
 
-][JHOˆ
-Âˆ‹‹š][Kˆ[˜X›YˆYKˆ[^NˆYKˆİ\ˆŒŒ‹ˆ[™ˆŒŒ‹ˆJJBˆˆ
-›İË˜]˜Z[Xš[]H×JK›X\
+    if (path === "/scheduling/profile" && request.method === "GET") {
+      await ensureSchedulingTables();
+      const existing = await pool.query(
+        "SELECT * FROM scheduling_profiles WHERE user_id = $1",
+        [userId],
+      );
+      if (!existing.rowCount) return response.status(200).json(null);
+      const row = existing.rows[0];
+      const availability = row.always_available
+        ? defaultAvailability.map((item) => ({
+            ...item,
+            enabled: true,
+            allDay: true,
+            start: "00:00",
+            end: "24:00",
+          }))
+        : (row.availability || []).map((item) => ({
+            ...item,
+            allDay: Boolean(item.allDay),
+          }));
+      return response
+        .status(200)
+        .json({
+          ...publicProfile(row),
+          availability,
+          maxBookingsPerDay: row.max_bookings_per_day,
+          blackouts: row.blackouts,
+        });
+    }
+    if (path === "/scheduling/profile" && request.method === "PUT") {
+      await ensureSchedulingTables();
+      const body = request.body || {};
+      if (!body.displayName?.trim() || !validTimezone(body.timezone))
+        return response
+          .status(400)
+          .json({ error: "A display name and valid timezone are required" });
+      const baseSlug = slugify(body.slug || body.displayName);
+      const current = await pool.query(
+        "SELECT slug FROM scheduling_profiles WHERE user_id = $1",
+        [userId],
+      );
+      let slug = current.rows[0]?.slug || baseSlug;
+      if (!current.rowCount || (body.slug && body.slug !== slug)) {
+        slug = baseSlug;
+        const taken = await pool.query(
+          `SELECT 1 FROM scheduling_profiles WHERE slug = $1 AND user_id <> $2
+          UNION ALL SELECT 1 FROM scheduling_profile_aliases WHERE alias = $1 AND user_id <> $2 LIMIT 1`,
+          [slug, userId],
+        );
+        if (taken.rowCount)
+          slug = `${slug}-${Math.random().toString(36).slice(2, 7)}`;
+      }
+      const availability = Array.isArray(body.availability)
+        ? body.availability.map((item) => ({
+            day: Number(item.day),
+            enabled: Boolean(item.enabled),
+            allDay: Boolean(item.allDay),
+            start: item.allDay ? "00:00" : item.start,
+            end: item.allDay ? "24:00" : item.end,
+          }))
+        : defaultAvailability;
+      const maxBookingsPerDay = [1, 2, 3, 4, 5].includes(
+        Number(body.maxBookingsPerDay),
+      )
+        ? Number(body.maxBookingsPerDay)
+        : null;
+      const blackouts = normalizeBlackouts(body.blackouts);
+      if (current.rowCount && current.rows[0].slug !== slug) {
+        await pool.query(
+          "DELETE FROM scheduling_profile_aliases WHERE alias = $1 AND user_id = $2",
+          [slug, userId],
+        );
+        await pool.query(
+          "INSERT INTO scheduling_profile_aliases (alias,user_id) VALUES ($1,$2) ON CONFLICT (alias) DO NOTHING",
+          [current.rows[0].slug, userId],
+        );
+      }
+      const bufferMinutes = normalizeBufferMinutes(body.bufferMinutes);
+      const result = await pool.query(
+        `INSERT INTO scheduling_profiles (user_id,slug,display_name,timezone,duration_minutes,buffer_minutes,availability,always_available,max_bookings_per_day,blackouts) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+        ON CONFLICT (user_id) DO UPDATE SET slug=EXCLUDED.slug,display_name=EXCLUDED.display_name,timezone=EXCLUDED.timezone,duration_minutes=EXCLUDED.duration_minutes,buffer_minutes=EXCLUDED.buffer_minutes,availability=EXCLUDED.availability,always_available=EXCLUDED.always_available,max_bookings_per_day=EXCLUDED.max_bookings_per_day,blackouts=EXCLUDED.blackouts,updated_at=NOW() RETURNING *`,
+        [
+          userId,
+          slug,
+          body.displayName.trim(),
+          body.timezone,
+          Math.max(15, Math.min(180, Number(body.durationMinutes || 30))),
+          bufferMinutes,
+          JSON.stringify(availability),
+          false,
+          maxBookingsPerDay,
+          JSON.stringify(blackouts),
+        ],
+      );
+      const row = result.rows[0];
+      return response
+        .status(200)
+        .json({
+          ...publicProfile(row),
+          availability: row.availability,
+          maxBookingsPerDay: row.max_bookings_per_day,
+          blackouts: row.blackouts,
+        });
+    }
+    if (path === "/scheduling/polls" && request.method === "GET") {
+      await ensureSchedulingTables();
+      const polls = await pool.query(
+        "SELECT * FROM scheduling_polls WHERE owner_id = $1 ORDER BY created_at DESC",
+        [userId],
+      );
+      const output = [];
+      for (const row of polls.rows) {
+        const responses = await pool.query(
+          "SELECT selections FROM poll_responses WHERE poll_id = $1",
+          [row.id],
+        );
+        output.push(pollPayload(row, responses.rows));
+      }
+      return response.status(200).json(output);
+    }
+    if (path === "/scheduling/polls" && request.method === "POST") {
+      await ensureSchedulingTables();
+      const { title, description, timezone, durationMinutes, options } =
+        request.body || {};
+      const normalized = Array.isArray(options)
+        ? [
+            ...new Set(options.map((item) => new Date(item).toISOString())),
+          ].sort()
+        : [];
+      if (!title?.trim() || !validTimezone(timezone) || normalized.length < 2)
+        return response
+          .status(400)
+          .json({
+            error: "Title, timezone, and at least two times are required",
+          });
+      const id = randomUUID();
+      const slug = `${slugify(title)}-${Math.random().toString(36).slice(2, 8)}`;
+      const result = await pool.query(
+        "INSERT INTO scheduling_polls (id,owner_id,slug,title,description,timezone,duration_minutes,options) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *",
+        [
+          id,
+          userId,
+          slug,
+          title.trim(),
+          description || null,
+          timezone,
+          Number(durationMinutes || 30),
+          JSON.stringify(normalized),
+        ],
+      );
+      return response.status(201).json(pollPayload(result.rows[0]));
+    }
+    const finalizePoll = path.match(/^\/scheduling\/polls\/([^/]+)\/finalize$/);
+    if (finalizePoll && request.method === "POST") {
+      await ensureSchedulingTables();
+      const poll = await pool.query(
+        "SELECT * FROM scheduling_polls WHERE id = $1 AND owner_id = $2",
+        [finalizePoll[1], userId],
+      );
+      if (!poll.rowCount || poll.rows[0].status !== "open")
+        return response.status(404).json({ error: "Open poll not found" });
+      const startTime = new Date(request.body?.startTime).toISOString();
+      if (!poll.rows[0].options.includes(startTime))
+        return response.status(400).json({ error: "Choose a proposed time" });
+      const endTime = addMinutes(
+        new Date(startTime),
+        poll.rows[0].duration_minutes,
+      ).toISOString();
+      const conflict = await pool.query(
+        "SELECT 1 FROM meetings WHERE calendar_token=$1 AND start_time < $2 AND COALESCE(end_time,start_time + interval '30 minutes') > $3 LIMIT 1",
+        [userId, endTime, startTime],
+      );
+      if (conflict.rowCount)
+        return response
+          .status(409)
+          .json({ error: "That time now conflicts with your calendar" });
+      const inserted = await pool.query(
+        "INSERT INTO meetings (calendar_token,title,description,start_time,end_time,timezone,notes,color) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *",
+        [
+          userId,
+          poll.rows[0].title,
+          poll.rows[0].description,
+          startTime,
+          endTime,
+          poll.rows[0].timezone,
+          "Confirmed from a MeetMind group poll",
+          "#8b5cf6",
+        ],
+      );
+      await pool.query(
+        "UPDATE scheduling_polls SET status='finalized',final_start=$1,meeting_id=$2 WHERE id=$3",
+        [startTime, inserted.rows[0].id, poll.rows[0].id],
+      );
+      return response
+        .status(200)
+        .json({ success: true, meeting: meeting(inserted.rows[0]) });
+    }
 
-][JHOˆ
-Âˆ‹‹š][Kˆ[^Nˆ›ÛÛX[Š][K˜[^JKˆJJNÂˆ™]\›ˆ™\ÜÛœÙBˆœİ]\ÊŒ
-BˆšœÛÛŠÂˆ‹‹œX›XÔ›Ùš[J›İÊKˆ]˜Z[Xš[]KˆX^›ÛÚÚ[™ÜÔ\‘^Nˆ›İË›X^Ø›ÛÚÚ[™Ü×Ü\—Ù^Kˆ›XÚÛİ]Îˆ›İË˜›XÚÛİ]ËˆJNÂˆBˆYˆ
-]OOH‹ÜØÚY[[™ËÜ›Ùš[Hˆ	‰ˆ™\]Y\İ›Y]ÙOOH”UŠHÂˆ]ØZ][œİ\™TØÚY[[™ÕX›\Ê
-NÂˆÛÛœİ›ÙHH™\]Y\İ˜›ÙHßNÂˆYˆ
-X›ÙK™\Ü^S˜[YOËš[J
-H]˜[Y[Y^›Û™J›ÙK[Y^›Û™JJBˆ™]\›ˆ™\ÜÛœÙBˆœİ]\Ê
-BˆšœÛÛŠÈ\œ›ÜˆH\Ü^H˜[YH[™˜[Y[Y^›Û™H\™H™\]Z\™YˆJNÂˆÛÛœİ˜\ÙTÛYÈHÛYÚYJ›ÙKœÛYÈ›ÙK™\Ü^S˜[YJNÂˆÛÛœİİ\œ™[H]ØZ]ÛÛœ]Y\Jˆ”ÑSPÕÛYÈ”“ÓHØÚY[[™×Ü›Ùš[\ÈÒT‘H\Ù\—ÚYH	H‹ˆİ\Ù\’YKˆ
-NÂˆ]ÛYÈHİ\œ™[œ›İÜÖÌOËœÛYÈ˜\ÙTÛYÎÂˆYˆ
-Xİ\œ™[œ›İĞÛİ[
-›ÙKœÛYÈ	‰ˆ›ÙKœÛYÈOOHÛYÊJHÂˆÛYÈH˜\ÙTÛYÎÂˆÛÛœİZÙ[ˆH]ØZ]ÛÛœ]Y\JˆÑSPÕH”“ÓHØÚY[[™×Ü›Ùš[\ÈÒT‘HÛYÈH	HS‘\Ù\—ÚYˆ	‚ˆS’SÓˆSÑSPÕH”“ÓHØÚY[[™×Ü›Ùš[WØ[X\Ù\ÈÒT‘H[X\ÈH	HS‘\Ù\—ÚYˆ	ˆSRUXˆÜÛYË\Ù\’YKˆ
-NÂˆYˆ
-ZÙ[‹œ›İĞÛİ[
-BˆÛYÈH	ÜÛYßKIÓX]œ˜[™ÛJ
-KÔİš[™ÊÍŠKœÛXÙJ‹Ê_XÂˆBˆÛÛœİ]˜Z[Xš[]HH\œ˜^Kš\Ğ\œ˜^J›ÙK˜]˜Z[Xš[]JBˆÈ›ÙK˜]˜Z[Xš[]K›X\
+    if (path === "/ai/extract-meeting" && request.method === "POST") {
+      return await extractMeeting(request, response, userId);
+    }
 
-][JHOˆ
-Âˆ^Nˆ[X™\Š][K™^JKˆ[˜X›Yˆ›ÛÛX[Š][K™[˜X›Y
-Kˆ[^Nˆ›ÛÛX[Š][K˜[^JKˆİ\ˆ][K˜[^HÈŒŒˆˆ][Kœİ\ˆ[™ˆ][K˜[^HÈŒŒˆˆ][K™[™ˆJJBˆˆY˜][]˜Z[Xš[]NÂˆÛÛœİX^›ÛÚÚ[™ÜÔ\‘^HHÌK‹ËWKš[˜ÛY\Êˆ[X™\Š›ÙK›X^›ÛÚÚ[™ÜÔ\‘^JKˆ
-BˆÈ[X™\Š›ÙK›X^›ÛÚÚ[™ÜÔ\‘^JBˆˆ[ÂˆÛÛœİ›XÚÛİ]ÈH›Ü›X[^™P›XÚÛİ]Ê›ÙK˜›XÚÛİ]ÊNÂˆYˆ
-İ\œ™[œ›İĞÛİ[	‰ˆİ\œ™[œ›İÜÖÌKœÛYÈOOHÛYÊHÂˆ]ØZ]ÛÛœ]Y\Jˆ‘SUH”“ÓHØÚY[[™×Ü›Ùš[WØ[X\Ù\ÈÒT‘H[X\ÈH	HS‘\Ù\—ÚYH	ˆ‹ˆÜÛYË\Ù\’YKˆ
-NÂˆ]ØZ]ÛÛœ]Y\Jˆ’S”ÑT•S•ÈØÚY[[™×Ü›Ùš[WØ[X\Ù\È
-[X\Ë\Ù\—ÚY
-HSQTÈ
-	K	ŠHÓˆÓÓ‘“PÕ
-[X\ÊHÈ“ÕS‘È‹ˆØİ\œ™[œ›İÜÖÌKœÛYË\Ù\’YKˆ
-NÂˆBˆÛÛœİY™™\“Z[]\ÈH›Ü›X[^™PY™™\“Z[]\Ê›ÙK˜Y™™\“Z[]\ÊNÂˆÛÛœİ™\İ[H]ØZ]ÛÛœ]Y\JˆS”ÑT•S•ÈØÚY[[™×Ü›Ùš[\È
-\Ù\—ÚYÛYË\Ü^WÛ˜[YK[Y^›Û™K\˜][Û—ÛZ[]\ËY™™\—ÛZ[]\Ë]˜Z[Xš[]K[Ø^\×Ø]˜Z[X›KX^Ø›ÛÚÚ[™Ü×Ü\—Ù^K›XÚÛİ]ÊHSQTÈ
-	K	‹	Ë		K	‹	Ë		K	L
-BˆÓˆÓÓ‘“PÕ
-\Ù\—ÚY
-HÈTUHÑUÛYÏQVÓQQœÛYË\Ü^WÛ˜[YOQVÓQQ™\Ü^WÛ˜[YK[Y^›Û™OQVÓQQ[Y^›Û™K\˜][Û—ÛZ[]\ÏQVÓQQ™\˜][Û—ÛZ[]\ËY™™\—ÛZ[]\ÏQVÓQQ˜Y™™\—ÛZ[]\Ë]˜Z[Xš[]OQVÓQQ˜]˜Z[Xš[]K[Ø^\×Ø]˜Z[X›OQVÓQQ˜[Ø^\×Ø]˜Z[X›KX^Ø›ÛÚÚ[™Ü×Ü\—Ù^OQVÓQQ›X^Ø›ÛÚÚ[™Ü×Ü\—Ù^K›XÚÛİ]ÏQVÓQQ˜›XÚÛİ]Ë\]YØ]S“ÕÊ
-H‘UT“’S‘È
-˜ˆÂˆ\Ù\’YˆÛYËˆ›ÙK™\Ü^S˜[YKš[J
-Kˆ›ÙK[Y^›Û™KˆX]›X^
-MKX]›Z[ŠN[X™\Š›ÙK™\˜][Û“Z[]\ÈÌ
-JJKˆY™™\“Z[]\Ëˆ”ÓÓ‹œİš[™ÚYJ]˜Z[Xš[]JKˆ˜[ÙKˆX^›ÛÚÚ[™ÜÔ\‘^Kˆ”ÓÓ‹œİš[™ÚYJ›XÚÛİ]ÊKˆKˆ
-NÂˆÛÛœİ›İÈH™\İ[œ›İÜÖÌNÂˆ™]\›ˆ™\ÜÛœÙBˆœİ]\ÊŒ
-BˆšœÛÛŠÂˆ‹‹œX›XÔ›Ùš[J›İÊKˆ]˜Z[Xš[]Nˆ›İË˜]˜Z[Xš[]KˆX^›ÛÚÚ[™ÜÔ\‘^Nˆ›İË›X^Ø›ÛÚÚ[™Ü×Ü\—Ù^Kˆ›XÚÛİ]Îˆ›İË˜›XÚÛİ]ËˆJNÂˆBˆYˆ
-]OOH‹ÜØÚY[[™ËÜÛÈˆ	‰ˆ™\]Y\İ›Y]ÙOOH‘ÑUŠHÂˆ]ØZ][œİ\™TØÚY[[™ÕX›\Ê
-NÂˆÛÛœİÛÈH]ØZ]ÛÛœ]Y\Jˆ”ÑSPÕ
-ˆ”“ÓHØÚY[[™×ÜÛÈÒT‘HİÛ™\—ÚYH	HÔ‘Tˆ–HÜ™X]YØ]TĞÈ‹ˆİ\Ù\’YKˆ
-NÂˆÛÛœİİ]]H×NÂˆ›Üˆ
-ÛÛœİ›İÈÙˆÛËœ›İÜÊHÂˆÛÛœİ™\ÜÛœÙ\ÈH]ØZ]ÛÛœ]Y\Jˆ”ÑSPÕÙ[Xİ[ÛœÈ”“ÓHÛÜ™\ÜÛœÙ\ÈÒT‘HÛÚYH	H‹ˆÜ›İËšYKˆ
-NÂˆİ]]œ\Ú
-Û^[ØY
-›İË™\ÜÛœÙ\Ëœ›İÜÊJNÂˆBˆ™]\›ˆ™\ÜÛœÙKœİ]\ÊŒ
-KšœÛÛŠİ]]
-NÂˆBˆYˆ
-]OOH‹ÜØÚY[[™ËÜÛÈˆ	‰ˆ™\]Y\İ›Y]ÙOOH”ÔÕŠHÂˆ]ØZ][œİ\™TØÚY[[™ÕX›\Ê
-NÂˆÛÛœİÈ]K\ØÜš\[Û‹[Y^›Û™K\˜][Û“Z[]\ËÜ[ÛœÈHBˆ™\]Y\İ˜›ÙHßNÂˆÛÛœİ›Ü›X[^™YH\œ˜^Kš\Ğ\œ˜^JÜ[ÛœÊBˆÈÂˆ‹‹›™]ÈÙ]
-Ü[ÛœË›X\
+    const scanSourceMatch = path.match(/^\/scan-sources\/([^/]+)$/);
+    if (scanSourceMatch && request.method === "DELETE") {
+      await ensureScanStorageTables();
+      const removed = await pool.query(
+        `DELETE FROM scan_sources source
+        WHERE source.id=$1 AND source.owner_id=$2
+          AND NOT EXISTS (SELECT 1 FROM meetings WHERE scan_source_id=source.id)
+        RETURNING blob_url`,
+        [decodeURIComponent(scanSourceMatch[1]), userId],
+      );
+      if (removed.rowCount) await del(removed.rows[0].blob_url);
+      return response
+        .status(200)
+        .json({ success: true, deleted: Boolean(removed.rowCount) });
+    }
 
-][JHOˆ™]È]J][JKÒTÓÔİš[™Ê
-JJKˆKœÛÜ
+    const sourceImageMatch = path.match(/^\/meetings\/(\d+)\/source-image$/);
+    if (sourceImageMatch && request.method === "GET") {
+      await ensureScanStorageTables();
+      const result = await pool.query(
+        `SELECT source.blob_url,source.mime_type
+        FROM meetings meeting JOIN scan_sources source ON source.id=meeting.scan_source_id
+        WHERE meeting.id=$1 AND meeting.calendar_token=$2 AND source.owner_id=$2`,
+        [Number(sourceImageMatch[1]), userId],
+      );
+      if (!result.rowCount)
+        return response.status(404).json({ error: "Original scan not found" });
+      const stored = await get(result.rows[0].blob_url, { access: "private" });
+      if (!stored || stored.statusCode !== 200 || !stored.stream)
+        return response.status(404).json({ error: "Original scan not found" });
+      response.setHeader("Content-Type", result.rows[0].mime_type);
+      response.setHeader("Content-Disposition", "inline");
+      response.setHeader("Cache-Control", "private, no-store, max-age=0");
+      response.setHeader("X-Content-Type-Options", "nosniff");
+      return Readable.fromWeb(stored.stream).pipe(response);
+    }
 
-Bˆˆ×NÂˆYˆ
-]]OËš[J
-H]˜[Y[Y^›Û™J[Y^›Û™JH›Ü›X[^™Y›[™İŠBˆ™]\›ˆ™\ÜÛœÙBˆœİ]\Ê
-BˆšœÛÛŠÂˆ\œ›Üˆ•]K[Y^›Û™K[™]X\İÛÈ[Y\È\™H™\]Z\™Y‹ˆJNÂˆÛÛœİYH˜[™ÛUURQ
+    if (path === "/meetings" && request.method === "GET") {
+      await materializeSeries(pool, userId);
+      const result = await pool.query(
+        "SELECT * FROM meetings WHERE calendar_token = $1 ORDER BY start_time",
+        [userId],
+      );
+      return response.status(200).json(result.rows.map(meeting));
+    }
 
-NÂˆÛÛœİÛYÈH	ÜÛYÚYJ]J_KIÓX]œ˜[™ÛJ
-KÔİš[™ÊÍŠKœÛXÙJ‹
-_XÂˆÛÛœİ™\İ[H]ØZ]ÛÛœ]Y\Jˆ’S”ÑT•S•ÈØÚY[[™×ÜÛÈ
-YİÛ™\—ÚYÛYË]K\ØÜš\[Û‹[Y^›Û™K\˜][Û—ÛZ[]\ËÜ[ÛœÊHSQTÈ
-	K	‹	Ë		K	‹	Ë	
-H‘UT“’S‘È
-ˆ‹ˆÂˆYˆ\Ù\’YˆÛYËˆ]Kš[J
-Kˆ\ØÜš\[Ûˆ[ˆ[Y^›Û™Kˆ[X™\Š\˜][Û“Z[]\ÈÌ
-Kˆ”ÓÓ‹œİš[™ÚYJ›Ü›X[^™Y
-KˆKˆ
-NÂˆ™]\›ˆ™\ÜÛœÙKœİ]\ÊŒJKšœÛÛŠÛ^[ØY
-™\İ[œ›İÜÖÌJJNÂˆBˆÛÛœİš[˜[^™TÛH]›X]Ú
-×—ÜØÚY[[™×ÜÛ×Ê×‹×JÊWÙš[˜[^™IÊNÂˆYˆ
-š[˜[^™TÛ	‰ˆ™\]Y\İ›Y]ÙOOH”ÔÕŠHÂˆ]ØZ][œİ\™TØÚY[[™ÕX›\Ê
-NÂˆÛÛœİÛH]ØZ]ÛÛœ]Y\Jˆ”ÑSPÕ
-ˆ”“ÓHØÚY[[™×ÜÛÈÒT‘HYH	HS‘İÛ™\—ÚYH	ˆ‹ˆÙš[˜[^™TÛÌWK\Ù\’YKˆ
-NÂˆYˆ
-\Ûœ›İĞÛİ[Ûœ›İÜÖÌKœİ]\ÈOOH›Ü[ˆŠBˆ™]\›ˆ™\ÜÛœÙKœİ]\Ê
-KšœÛÛŠÈ\œ›Üˆ“Ü[ˆÛ›İ›İ[™ˆJNÂˆÛÛœİİ\[YHH™]È]J™\]Y\İ˜›ÙOËœİ\[YJKÒTÓÔİš[™Ê
-NÂˆYˆ
-\Ûœ›İÜÖÌK›Ü[ÛœËš[˜ÛY\Êİ\[YJJBˆ™]\›ˆ™\ÜÛœÙKœİ]\Ê
-KšœÛÛŠÈ\œ›ÜˆÚÛÜÙHH›ÜÜÙY[YHˆJNÂˆÛÛœİ[™[YHHYZ[]\Êˆ™]È]Jİ\[YJKˆÛœ›İÜÖÌK™\˜][Û—ÛZ[]\Ëˆ
-KÒTÓÔİš[™Ê
-NÂˆÛÛœİÛÛ™›XİH]ØZ]ÛÛœ]Y\Jˆ”ÑSPÕH”“ÓHYY][™ÜÈÒT‘HØ[[™\—İÚÙ[IHS‘İ\İ[YH	ˆS‘ÓĞSTĞÑJ[™İ[YKİ\İ[YH
-È[\˜[	ÌÌZ[]\ÉÊHˆ	ÈSRUH‹ˆİ\Ù\’Y[™[YKİ\[YWKˆ
-NÂˆYˆ
-ÛÛ™›Xİœ›İĞÛİ[
-Bˆ™]\›ˆ™\ÜÛœÙBˆœİ]\ÊJBˆšœÛÛŠÈ\œ›Üˆ•][YH›İÈÛÛ™›XİÈÚ][İ\ˆØ[[™\ˆˆJNÂˆÛÛœİ[œÙ\YH]ØZ]ÛÛœ]Y\Jˆ’S”ÑT•S•ÈYY][™ÜÈ
-Ø[[™\—İÚÙ[‹]K\ØÜš\[Û‹İ\İ[YK[™İ[YK[Y^›Û™K›İ\ËÛÛÜŠHSQTÈ
-	K	‹	Ë		K	‹	Ë	
-H‘UT“’S‘È
-ˆ‹ˆÂˆ\Ù\’YˆÛœ›İÜÖÌK]KˆÛœ›İÜÖÌK™\ØÜš\[Û‹ˆİ\[YKˆ[™[YKˆÛœ›İÜÖÌK[Y^›Û™KˆÛÛ™š\›YYœ›ÛHHYY]Z[™Ü›İ\Û‹ˆˆÎXÙˆ‹ˆKˆ
-NÂˆ]ØZ]ÛÛœ]Y\Jˆ•TUHØÚY[[™×ÜÛÈÑUİ]\ÏIÙš[˜[^™Y	Ëš[˜[Üİ\IKYY][™×ÚYIˆÒT‘HYIÈ‹ˆÜİ\[YK[œÙ\Yœ›İÜÖÌKšYÛœ›İÜÖÌKšYKˆ
-NÂˆ™]\›ˆ™\ÜÛœÙBˆœİ]\ÊŒ
-BˆšœÛÛŠÈİXØÙ\ÜÎˆYKYY][™ÎˆYY][™Ê[œÙ\Yœ›İÜÖÌJHJNÂˆB‚ˆYˆ
-]OOH‹ØZKÙ^˜Xİ[YY][™Èˆ	‰ˆ™\]Y\İ›Y]ÙOOH”ÔÕŠHÂˆ™]\›ˆ]ØZ]^˜XİYY][™Ê™\]Y\İ™\ÜÛœÙK\Ù\’Y
-NÂˆB‚ˆÛÛœİØØ[”Ûİ\˜ÙSX]ÚH]›X]Ú
-×—ÜØØ[‹\Ûİ\˜Ù\×Ê×‹×JÊIÊNÂˆYˆ
-ØØ[”Ûİ\˜ÙSX]Ú	‰ˆ™\]Y\İ›Y]ÙOOH‘SUHŠHÂˆ]ØZ][œİ\™TØØ[”İÜ˜YÙUX›\Ê
-NÂˆÛÛœİ™[[İ™YH]ØZ]ÛÛœ]Y\JˆSUH”“ÓHØØ[—ÜÛİ\˜Ù\ÈÛİ\˜ÙBˆÒT‘HÛİ\˜ÙKšYIHS‘Ûİ\˜ÙK›İÛ™\—ÚYI‚ˆS‘“ÕVTÕÈ
-ÑSPÕH”“ÓHYY][™ÜÈÒT‘HØØ[—ÜÛİ\˜ÙWÚY\Ûİ\˜ÙKšY
-Bˆ‘UT“’S‘È›Ø—İ\›ˆÙXÛÙUT’PÛÛ\Û™[
-ØØ[”Ûİ\˜ÙSX]ÚÌWJK\Ù\’YKˆ
-NÂˆYˆ
-™[[İ™Yœ›İĞÛİ[
-H]ØZ][
-™[[İ™Yœ›İÜÖÌK˜›Ø—İ\›
-NÂˆ™]\›ˆ™\ÜÛœÙBˆœİ]\ÊŒ
-BˆšœÛÛŠÈİXØÙ\ÜÎˆYK[]Yˆ›ÛÛX[Š™[[İ™Yœ›İĞÛİ[
-HJNÂˆB‚ˆÛÛœİÛİ\˜ÙR[XYÙSX]ÚH]›X]Ú
-×—ÛYY][™Ü×Ê
-ÊWÜÛİ\˜ÙKZ[XYÙIÊNÂˆYˆ
-Ûİ\˜ÙR[XYÙSX]Ú	‰ˆ™\]Y\İ›Y]ÙOOH‘ÑUŠHÂˆ]ØZ][œİ\™TØØ[”İÜ˜YÙUX›\Ê
-NÂˆÛÛœİ™\İ[H]ØZ]ÛÛœ]Y\JˆÑSPÕÛİ\˜ÙK˜›Ø—İ\›Ûİ\˜ÙK›Z[YWİ\Bˆ”“ÓHYY][™ÜÈYY][™È“ÒSˆØØ[—ÜÛİ\˜Ù\ÈÛİ\˜ÙHÓˆÛİ\˜ÙKšY[YY][™ËœØØ[—ÜÛİ\˜ÙWÚYˆÒT‘HYY][™ËšYIHS‘YY][™Ë˜Ø[[™\—İÚÙ[IˆS‘Ûİ\˜ÙK›İÛ™\—ÚYI˜ˆÓ[X™\ŠÛİ\˜ÙR[XYÙSX]ÚÌWJK\Ù\’YKˆ
-NÂˆYˆ
-\™\İ[œ›İĞÛİ[
-Bˆ™]\›ˆ™\ÜÛœÙKœİ]\Ê
-KšœÛÛŠÈ\œ›Üˆ“ÜšYÚ[˜[ØØ[ˆ›İ›İ[™ˆJNÂˆÛÛœİİÜ™YH]ØZ]Ù]
-™\İ[œ›İÜÖÌK˜›Ø—İ\›ÈXØÙ\ÜÎˆœš]˜]HˆJNÂˆYˆ
-\İÜ™YİÜ™Yœİ]\ĞÛÙHOOHŒ\İÜ™Yœİ™X[JBˆ™]\›ˆ™\ÜÛœÙKœİ]\Ê
-KšœÛÛŠÈ\œ›Üˆ“ÜšYÚ[˜[ØØ[ˆ›İ›İ[™ˆJNÂˆ™\ÜÛœÙKœÙ]XY\ŠÛÛ[U\H‹™\İ[œ›İÜÖÌK›Z[YWİ\JNÂˆ™\ÜÛœÙKœÙ]XY\ŠÛÛ[Q\ÜÜÚ][Ûˆ‹š[›[™HŠNÂˆ™\ÜÛœÙKœÙ]XY\ŠØXÚKPÛÛ›Û‹œš]˜]K›Ë\İÜ™KX^XYÙOLŠNÂˆ™\ÜÛœÙKœÙ]XY\Š–PÛÛ[U\KSÜ[ÛœÈ‹››ÜÛšY™ˆŠNÂˆ™]\›ˆ™XYX›K™œ›ÛUÙXŠİÜ™Yœİ™X[JKœ\J™\ÜÛœÙJNÂˆB‚ˆYˆ
-]OOH‹ÛYY][™ÜÈˆ	‰ˆ™\]Y\İ›Y]ÙOOH‘ÑUŠHÂˆ]ØZ]X]\šX[^™TÙ\šY\ÊÛÛ\Ù\’Y
-NÂˆÛÛœİ™\İ[H]ØZ]ÛÛœ]Y\Jˆ”ÑSPÕ
-ˆ”“ÓHYY][™ÜÈÒT‘HØ[[™\—İÚÙ[ˆH	HÔ‘Tˆ–Hİ\İ[YH‹ˆİ\Ù\’YKˆ
-NÂˆ™]\›ˆ™\ÜÛœÙKœİ]\ÊŒ
-KšœÛÛŠ™\İ[œ›İÜË›X\
-YY][™ÊJNÂˆB‚ˆYˆ
-]OOH‹ÛYY][™ÜÈˆ	‰ˆ™\]Y\İ›Y]ÙOOH”ÔÕŠHÂˆ]ØZ][œİ\™TØØ[”İÜ˜YÙUX›\Ê
-NÂˆ]ØZ][œİ\™T™Xİ\œ™[˜ÙUX›\ÊÛÛ
-NÂˆÛÛœİ˜[Y\ÈHYY][™Õ˜[Y\Ê™\]Y\İ˜›ÙJNÂˆÛÛœİÙ^\ÈHØš™XİšÙ^\Ê˜[Y\ÊNÂˆÛÛœİÛİ\˜ÙTØØ[’YBˆ\[Ùˆ™\]Y\İ˜›ÙOËœÛİ\˜ÙTØØ[’YOOHœİš[™È‚ˆÈ™\]Y\İ˜›ÙKœÛİ\˜ÙTØØ[’Yˆˆ[ÂˆYˆ
-Ûİ\˜ÙTØØ[’Y
-HÂˆÛÛœİÛİ\˜ÙHH]ØZ]ÛÛœ]Y\Jˆ”ÑSPÕH”“ÓHØØ[—ÜÛİ\˜Ù\ÈÒT‘HYIHS‘İÛ™\—ÚYIˆ‹ˆÜÛİ\˜ÙTØØ[’Y\Ù\’YKˆ
-NÂˆYˆ
-\Ûİ\˜ÙKœ›İĞÛİ[
-Bˆ™]\›ˆ™\ÜÛœÙKœİ]\Ê
-KšœÛÛŠÈ\œ›Üˆ’[˜[YÜšYÚ[˜[ØØ[ˆˆJNÂˆBˆYˆ
-™\]Y\İ˜›ÙOËœ™Xİ\œ™[˜ÙJHÂˆÛÛœİÛY[H]ØZ]ÛÛ˜ÛÛ›™Xİ
+    if (path === "/meetings" && request.method === "POST") {
+      await ensureScanStorageTables();
+      await ensureRecurrenceTables(pool);
+      const values = meetingValues(request.body);
+      const keys = Object.keys(values);
+      const sourceScanId =
+        typeof request.body?.sourceScanId === "string"
+          ? request.body.sourceScanId
+          : null;
+      if (sourceScanId) {
+        const source = await pool.query(
+          "SELECT 1 FROM scan_sources WHERE id=$1 AND owner_id=$2",
+          [sourceScanId, userId],
+        );
+        if (!source.rowCount)
+          return response.status(400).json({ error: "Invalid original scan" });
+      }
+      if (request.body?.recurrence) {
+        const client = await pool.connect();
+        try {
+          await client.query("BEGIN");
+          const row = await createSeries(client, userId, { ...values, sourceScanId }, request.body.recurrence);
+          await client.query("COMMIT");
+          return response.status(201).json(meeting(row));
+        } catch (error) { await client.query("ROLLBACK"); throw error; }
+        finally { client.release(); }
+      }
+      const columns = [
+        "calendar_token",
+        ...keys.map((key) => editableFields[key]),
+        ...(sourceScanId ? ["scan_source_id"] : []),
+      ];
+      const params = [
+        userId,
+        ...keys.map((key) => values[key]),
+        ...(sourceScanId ? [sourceScanId] : []),
+      ];
+      const placeholders = params.map((_, index) => `$${index + 1}`);
+      const result = await pool.query(
+        `INSERT INTO meetings (${columns.join(", ")}) VALUES (${placeholders.join(", ")}) RETURNING *`,
+        params,
+      );
+      return response.status(201).json(meeting(result.rows[0]));
+    }
 
-NÂˆHÂˆ]ØZ]ÛY[œ]Y\J‘QÒSˆŠNÂˆÛÛœİ›İÈH]ØZ]Ü™X]TÙ\šY\ÊÛY[\Ù\’YÈ‹‹˜[Y\ËÛİ\˜ÙTØØ[’YK™\]Y\İ˜›ÙKœ™Xİ\œ™[˜ÙJNÂˆ]ØZ]ÛY[œ]Y\JÓÓSRUŠNÂˆ™]\›ˆ™\ÜÛœÙKœİ]\ÊŒJKšœÛÛŠYY][™Ê›İÊJNÂˆHØ]Ú
-\œ›ÜŠHÈ]ØZ]ÛY[œ]Y\J”“ÓPÒÈŠNÈ›İÈ\œ›ÜÈBˆš[˜[HÈÛY[œ™[X\ÙJ
-NÈBˆBˆÛÛœİÛÛ[[œÈHÂˆ˜Ø[[™\—İÚÙ[ˆ‹ˆ‹‹šÙ^\Ë›X\
+    const seriesMatch = path.match(/^\/meetings\/(\d+)\/series$/);
+    if (seriesMatch && request.method === "POST") {
+      await ensureRecurrenceTables(pool);
+      const { action, scope } = request.body || {};
+      if (!["update", "delete"].includes(action) || !["all", "future"].includes(scope))
+        return response.status(400).json({ error: "Invalid series action" });
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const found = await client.query("SELECT * FROM meetings WHERE id=$1 AND calendar_token=$2", [Number(seriesMatch[1]), userId]);
+        if (!found.rowCount) { await client.query("ROLLBACK"); return response.status(404).json({ error: "Meeting not found" }); }
+        let selected = found.rows[0];
+        const series = selected.series_id ? (await client.query("SELECT * FROM meeting_series WHERE id=$1 AND owner_id=$2 FOR UPDATE", [selected.series_id,userId])).rows[0] : null;
+        const locked = await client.query("SELECT * FROM meetings WHERE id=$1 AND calendar_token=$2 FOR UPDATE",[selected.id,userId]);
+        if (!locked.rowCount) throw new RecurrenceError("This occurrence changed in another window. Refresh before editing.");
+        selected = locked.rows[0];
+        let replacement = null;
+        if (action === "update") {
+          const values = meetingValues(request.body.meeting);
+          // Preserve the series' first date when editing the entire series from
+          // a later occurrence; shift by the reviewed local calendar delta.
+          if (series && scope === "all") {
+            const zone = request.body.recurrence?.timezone || series.rule.timezone;
+            const wall = value => Date.parse(formatInTimeZone(value, zone, "yyyy-MM-dd'T'HH:mm:ss") + "Z");
+            const duration = values.endTime ? Date.parse(values.endTime)-Date.parse(values.startTime) : null;
+            const shifted = new Date(wall(series.template.startTime) + wall(values.startTime)-wall(selected.start_time)).toISOString().slice(0,19);
+            values.startTime = fromZonedTime(shifted, zone).toISOString();
+            values.endTime = duration === null ? null : new Date(Date.parse(values.startTime)+duration).toISOString();
+          }
+          replacement = await createSeries(client,userId,{...values,sourceScanId:selected.scan_source_id},request.body.recurrence);
+        }
+        if (series) {
+          if (scope === "all") await client.query("UPDATE meeting_series SET active=FALSE WHERE id=$1",[series.id]);
+          else await client.query("UPDATE meeting_series SET stop_before=$2 WHERE id=$1",[series.id,selected.recurrence_key]);
+          await client.query("DELETE FROM meetings WHERE calendar_token=$1 AND series_id=$2 AND ($3::text='all' OR recurrence_key >= $4)",[userId,series.id,scope,selected.recurrence_key]);
+        } else {
+          // Direct bookings keep their management link: they cannot be turned
+          // into recurring series through a calendar edit.
+          const linked = await client.query("SELECT 1 FROM bookings WHERE meeting_id=$1",[selected.id]);
+          if (linked.rowCount) throw new RecurrenceError("A guest booking cannot be converted into a recurring series.");
+          await client.query("DELETE FROM meetings WHERE id=$1 AND calendar_token=$2",[selected.id,userId]);
+        }
+        await client.query("COMMIT");
+        return response.status(200).json(replacement ? meeting(replacement) : {success:true});
+      } catch(error) { await client.query("ROLLBACK"); throw error; }
+      finally { client.release(); }
+    }
 
-Ù^JHOˆY]X›QšY[ÖÚÙ^WJKˆ‹‹ŠÛİ\˜ÙTØØ[’YÈÈœØØ[—ÜÛİ\˜ÙWÚY—Hˆ×JKˆNÂˆÛÛœİ\˜[\ÈHÂˆ\Ù\’Yˆ‹‹šÙ^\Ë›X\
+    const match = path.match(/^\/meetings\/(\d+)$/);
+    if (match) {
+      await ensureRecurrenceTables(pool);
+      const id = Number(match[1]);
+      if (request.method === "GET") {
+        const result = await pool.query(
+          "SELECT * FROM meetings WHERE id = $1 AND calendar_token = $2",
+          [id, userId],
+        );
+        if (!result.rowCount)
+          return response.status(404).json({ error: "Meeting not found" });
+        return response.status(200).json(meeting(result.rows[0]));
+      }
+      if (request.method === "PUT" || request.method === "PATCH") {
+        const values = meetingValues(request.body, true);
+        const keys = Object.keys(values);
+        if (!keys.length)
+          return response
+            .status(400)
+            .json({ error: "No meeting fields supplied" });
+        const assignments = keys.map(
+          (key, index) => `${editableFields[key]} = $${index + 1}`,
+        );
+        const params = keys.map((key) => values[key]);
+        params.push(id, userId);
+        const result = await pool.query(
+          `UPDATE meetings SET ${assignments.join(", ")}, updated_at = NOW() WHERE id = $${keys.length + 1} AND calendar_token = $${keys.length + 2} RETURNING *`,
+          params,
+        );
+        if (!result.rowCount)
+          return response.status(404).json({ error: "Meeting not found" });
+        return response.status(200).json(meeting(result.rows[0]));
+      }
+      if (request.method === "DELETE") {
+        await ensureScanStorageTables();
+        const client = await pool.connect();
+        let orphanedBlobUrl = null;
+        let scanSourceId = null;
+        try {
+          await client.query("BEGIN");
+          // Always lock the parent series before its occurrence, matching the
+          // materializer and series editor lock order.
+          const parent = await client.query("SELECT series_id FROM meetings WHERE id=$1 AND calendar_token=$2",[id,userId]);
+          if (parent.rows[0]?.series_id) await client.query("SELECT id FROM meeting_series WHERE id=$1 AND owner_id=$2 FOR UPDATE",[parent.rows[0].series_id,userId]);
+          const source = await client.query(
+            "SELECT scan_source_id,series_id,recurrence_key FROM meetings WHERE id=$1 AND calendar_token=$2 FOR UPDATE",
+            [id, userId],
+          );
+          if (source.rows[0]) await excludeOccurrence(client, source.rows[0]);
+          await client.query(
+            `DELETE FROM bookings
+            WHERE owner_id = $2 AND meeting_id IN (
+              SELECT id FROM meetings WHERE id = $1 AND calendar_token = $2
+            )`,
+            [id, userId],
+          );
+          const result = await client.query(
+            "DELETE FROM meetings WHERE id = $1 AND calendar_token = $2",
+            [id, userId],
+          );
+          if (!result.rowCount) {
+            await client.query("ROLLBACK");
+            return response.status(404).json({ error: "Meeting not found" });
+          }
+          scanSourceId = source.rows[0]?.scan_source_id;
+          if (scanSourceId) {
+            const references = await client.query(
+              "SELECT COUNT(*)::int AS count FROM meetings WHERE scan_source_id=$1",
+              [scanSourceId],
+            );
+            if (references.rows[0].count === 0) {
+              const removed = await client.query(
+                "DELETE FROM scan_sources WHERE id=$1 AND owner_id=$2 RETURNING blob_url",
+                [scanSourceId, userId],
+              );
+              orphanedBlobUrl = removed.rows[0]?.blob_url || null;
+            }
+          }
+          await client.query("COMMIT");
+          if (orphanedBlobUrl)
+            await del(orphanedBlobUrl).catch((error) =>
+              console.error("Could not delete private scan blob", {
+                scanSourceId,
+                error: String(error),
+              }),
+            );
+          return response.status(200).json({ success: true });
+        } catch (error) {
+          await client.query("ROLLBACK");
+          throw error;
+        } finally {
+          client.release();
+        }
+      }
+    }
 
-Ù^JHOˆ˜[Y\ÖÚÙ^WJKˆ‹‹ŠÛİ\˜ÙTØØ[’YÈÜÛİ\˜ÙTØØ[’YHˆ×JKˆNÂˆÛÛœİXÙZÛ\œÈH\˜[\Ë›X\
-
-Ë[™^
-HOˆ		Ú[™^
-È_X
-NÂˆÛÛœİ™\İ[H]ØZ]ÛÛœ]Y\JˆS”ÑT•S•ÈYY][™ÜÈ
-	ØÛÛ[[œËš›Ú[Š‹Š_JHSQTÈ
-	ÜXÙZÛ\œËš›Ú[Š‹Š_JH‘UT“’S‘È
-˜ˆ\˜[\Ëˆ
-NÂˆ™]\›ˆ™\ÜÛœÙKœİ]\ÊŒJKšœÛÛŠYY][™Ê™\İ[œ›İÜÖÌJJNÂˆB‚ˆÛÛœİÙ\šY\ÓX]ÚH]›X]Ú
-×—ÛYY][™Ü×Ê
-ÊWÜÙ\šY\ÉÊNÂˆYˆ
-Ù\šY\ÓX]Ú	‰ˆ™\]Y\İ›Y]ÙOOH”ÔÕŠHÂˆ]ØZ][œİ\™T™Xİ\œ™[˜ÙUX›\ÊÛÛ
-NÂˆÛÛœİÈXİ[Û‹ØÛÜHHH™\]Y\İ˜›ÙHßNÂˆYˆ
-VÈ\]H‹™[]H—Kš[˜ÛY\ÊXİ[ÛŠHVÈ˜[‹™]\™H—Kš[˜ÛY\ÊØÛÜJJBˆ™]\›ˆ™\ÜÛœÙKœİ]\Ê
-KšœÛÛŠÈ\œ›Üˆ’[˜[YÙ\šY\ÈXİ[ÛˆˆJNÂˆÛÛœİÛY[H]ØZ]ÛÛ˜ÛÛ›™Xİ
-
-NÂˆHÂˆ]ØZ]ÛY[œ]Y\J‘QÒSˆŠNÂˆÛÛœİ›İ[™H]ØZ]ÛY[œ]Y\J”ÑSPÕ
-ˆ”“ÓHYY][™ÜÈÒT‘HYIHS‘Ø[[™\—İÚÙ[Iˆ‹Ó[X™\ŠÙ\šY\ÓX]ÚÌWJK\Ù\’YJNÂˆYˆ
-Y›İ[™œ›İĞÛİ[
-HÈ]ØZ]ÛY[œ]Y\J”“ÓPÒÈŠNÈ™]\›ˆ™\ÜÛœÙKœİ]\Ê
-KšœÛÛŠÈ\œ›Üˆ“YY][™È›İ›İ[™ˆJNÈBˆ]Ù[XİYH›İ[™œ›İÜÖÌNÂˆÛÛœİÙ\šY\ÈHÙ[XİYœÙ\šY\×ÚYÈ
-]ØZ]ÛY[œ]Y\J”ÑSPÕ
-ˆ”“ÓHYY][™×ÜÙ\šY\ÈÒT‘HYIHS‘İÛ™\—ÚYIˆ“ÔˆTUH‹ÜÙ[XİYœÙ\šY\×ÚY\Ù\’YJJKœ›İÜÖÌHˆ[ÂˆÛÛœİØÚÙYH]ØZ]ÛY[œ]Y\J”ÑSPÕ
-ˆ”“ÓHYY][™ÜÈÒT‘HYIHS‘Ø[[™\—İÚÙ[Iˆ“ÔˆTUH‹ÜÙ[XİYšY\Ù\’YJNÂˆYˆ
-[ØÚÙYœ›İĞÛİ[
-H›İÈ™]È™Xİ\œ™[˜ÙQ\œ›ÜŠ•\ÈØØİ\œ™[˜ÙHÚ[™ÙY[ˆ[›İ\ˆÚ[™İËˆ™Yœ™\Ú™Y›Ü™HY][™ËˆŠNÂˆÙ[XİYHØÚÙYœ›İÜÖÌNÂˆ]™\XÙ[Y[H[ÂˆYˆ
-Xİ[ÛˆOOH\]HŠHÂˆÛÛœİ˜[Y\ÈHYY][™Õ˜[Y\Ê™\]Y\İ˜›ÙK›YY][™ÊNÂˆËÈ™\Ù\™HHÙ\šY\ÉÈš\œİ]HÚ[ˆY][™ÈH[\™HÙ\šY\Èœ›ÛBˆËÈH]\ˆØØİ\œ™[˜ÙNÈÚYHH™]šY]ÙYØØ[Ø[[™\ˆ[K‚ˆYˆ
-Ù\šY\È	‰ˆØÛÜHOOH˜[ŠHÂˆÛÛœİ›Û™HH™\]Y\İ˜›ÙKœ™Xİ\œ™[˜ÙOË[Y^›Û™HÙ\šY\Ëœ[K[Y^›Û™NÂˆÛÛœİØ[H˜[YHOˆ]Kœ\œÙJ›Ü›X][•[YV›Û™J˜[YK›Û™K^^^KSSKY	Õ	Ò›[NœÜÈŠH
-È–ˆŠNÂˆÛÛœİ\˜][ÛˆH˜[Y\Ë™[™[YHÈ]Kœ\œÙJ˜[Y\Ë™[™[YJKQ]Kœ\œÙJ˜[Y\Ëœİ\[YJHˆ[ÂˆÛÛœİÚYYH™]È]JØ[
-Ù\šY\Ë[\]Kœİ\[YJH
-ÈØ[
-˜[Y\Ëœİ\[YJK]Ø[
-Ù[XİYœİ\İ[YJJKÒTÓÔİš[™Ê
-KœÛXÙJNJNÂˆ˜[Y\Ëœİ\[YHHœ›ÛV›Û™Y[YJÚYY›Û™JKÒTÓÔİš[™Ê
-NÂˆ˜[Y\Ë™[™[YHH\˜][ÛˆOOH[È[ˆ™]È]J]Kœ\œÙJ˜[Y\Ëœİ\[YJJÙ\˜][ÛŠKÒTÓÔİš[™Ê
-NÂˆBˆ™\XÙ[Y[H]ØZ]Ü™X]TÙ\šY\ÊÛY[\Ù\’YË‹‹˜[Y\ËÛİ\˜ÙTØØ[’YœÙ[XİYœØØ[—ÜÛİ\˜ÙWÚYK™\]Y\İ˜›ÙKœ™Xİ\œ™[˜ÙJNÂˆBˆYˆ
-Ù\šY\ÊHÂˆYˆ
-ØÛÜHOOH˜[ŠH]ØZ]ÛY[œ]Y\J•TUHYY][™×ÜÙ\šY\ÈÑUXİ]™OQSÑHÒT‘HYIH‹ÜÙ\šY\ËšYJNÂˆ[ÙH]ØZ]ÛY[œ]Y\J•TUHYY][™×ÜÙ\šY\ÈÑUİÜØ™Y›Ü™OIˆÒT‘HYIH‹ÜÙ\šY\ËšYÙ[XİYœ™Xİ\œ™[˜ÙWÚÙ^WJNÂˆ]ØZ]ÛY[œ]Y\J‘SUH”“ÓHYY][™ÜÈÒT‘HØ[[™\—İÚÙ[IHS‘Ù\šY\×ÚYIˆS‘
-	Î^IØ[	ÈÔˆ™Xİ\œ™[˜ÙWÚÙ^HH	
-H‹İ\Ù\’YÙ\šY\ËšYØÛÜKÙ[XİYœ™Xİ\œ™[˜ÙWÚÙ^WJNÂˆH[ÙHÂˆËÈ\™Xİ›ÛÚÚ[™ÜÈÙY\Z\ˆX[˜YÙ[Y[[šÎˆ^HØ[››İ™H\›™YˆËÈ[È™Xİ\œš[™ÈÙ\šY\È›İYÚHØ[[™\ˆY]‚ˆÛÛœİ[šÙYH]ØZ]ÛY[œ]Y\J”ÑSPÕH”“ÓH›ÛÚÚ[™ÜÈÒT‘HYY][™×ÚYIH‹ÜÙ[XİYšYJNÂˆYˆ
-[šÙYœ›İĞÛİ[
-H›İÈ™]È™Xİ\œ™[˜ÙQ\œ›ÜŠHİY\İ›ÛÚÚ[™ÈØ[››İ™HÛÛ™\Y[ÈH™Xİ\œš[™ÈÙ\šY\ËˆŠNÂˆ]ØZ]ÛY[œ]Y\J‘SUH”“ÓHYY][™ÜÈÒT‘HYIHS‘Ø[[™\—İÚÙ[Iˆ‹ÜÙ[XİYšY\Ù\’YJNÂˆBˆ]ØZ]ÛY[œ]Y\JÓÓSRUŠNÂˆ™]\›ˆ™\ÜÛœÙKœİ]\ÊŒ
-KšœÛÛŠ™\XÙ[Y[ÈYY][™Ê™\XÙ[Y[
-HˆÜİXØÙ\ÜÎY_JNÂˆHØ]Ú
-\œ›ÜŠHÈ]ØZ]ÛY[œ]Y\J”“ÓPÒÈŠNÈ›İÈ\œ›ÜÈBˆš[˜[HÈÛY[œ™[X\ÙJ
-NÈBˆB‚ˆÛÛœİX]ÚH]›X]Ú
-×—ÛYY][™Ü×Ê
-ÊIÊNÂˆYˆ
-X]Ú
-HÂˆ]ØZ][œİ\™T™Xİ\œ™[˜ÙUX›\ÊÛÛ
-NÂˆÛÛœİYH[X™\ŠX]ÚÌWJNÂˆYˆ
-™\]Y\İ›Y]ÙOOH‘ÑUŠHÂˆÛÛœİ™\İ[H]ØZ]ÛÛœ]Y\Jˆ”ÑSPÕ
-ˆ”“ÓHYY][™ÜÈÒT‘HYH	HS‘Ø[[™\—İÚÙ[ˆH	ˆ‹ˆÚY\Ù\’YKˆ
-NÂˆYˆ
-\™\İ[œ›İĞÛİ[
-Bˆ™]\›ˆ™\ÜÛœÙKœİ]\Ê
-KšœÛÛŠÈ\œ›Üˆ“YY][™È›İ›İ[™ˆJNÂˆ™]\›ˆ™\ÜÛœÙKœİ]\ÊŒ
-KšœÛÛŠYY][™Ê™\İ[œ›İÜÖÌJJNÂˆBˆYˆ
-™\]Y\İ›Y]ÙOOH”Uˆ™\]Y\İ›Y]ÙOOH”UÒŠHÂˆÛÛœİ˜[Y\ÈHYY][™Õ˜[Y\Ê™\]Y\İ˜›ÙKYJNÂˆÛÛœİÙ^\ÈHØš™XİšÙ^\Ê˜[Y\ÊNÂˆYˆ
-ZÙ^\Ë›[™İ
-Bˆ™]\›ˆ™\ÜÛœÙBˆœİ]\Ê
-BˆšœÛÛŠÈ\œ›Üˆ“›ÈYY][™ÈšY[Èİ\YYˆJNÂˆÛÛœİ\ÜÚYÛ›Y[ÈHÙ^\Ë›X\
-ˆ
-Ù^K[™^
-HOˆ	ÙY]X›QšY[ÖÚÙ^W_HH		Ú[™^
-È_Xˆ
-NÂˆÛÛœİ\˜[\ÈHÙ^\Ë›X\
-
-Ù^JHOˆ˜[Y\ÖÚÙ^WJNÂˆ\˜[\Ëœ\Ú
-Y\Ù\’Y
-NÂˆÛÛœİ™\İ[H]ØZ]ÛÛœ]Y\JˆTUHYY][™ÜÈÑU	Ø\ÜÚYÛ›Y[Ëš›Ú[Š‹Š_K\]YØ]H“ÕÊ
-HÒT‘HYH		ÚÙ^\Ë›[™İ
-È_HS‘Ø[[™\—İÚÙ[ˆH		ÚÙ^\Ë›[™İ
-ÈŸH‘UT“’S‘È
-˜ˆ\˜[\Ëˆ
-NÂˆYˆ
-\™\İ[œ›İĞÛİ[
-Bˆ™]\›ˆ™\ÜÛœÙKœİ]\Ê
-KšœÛÛŠÈ\œ›Üˆ“YY][™È›İ›İ[™ˆJNÂˆ™]\›ˆ™\ÜÛœÙKœİ]\ÊŒ
-KšœÛÛŠYY][™Ê™\İ[œ›İÜÖÌJJNÂˆBˆYˆ
-™\]Y\İ›Y]ÙOOH‘SUHŠHÂˆ]ØZ][œİ\™TØØ[”İÜ˜YÙUX›\Ê
-NÂˆÛÛœİÛY[H]ØZ]ÛÛ˜ÛÛ›™Xİ
-
-NÂˆ]Üœ[™Y›Ø•\›H[Âˆ]ØØ[”Ûİ\˜ÙRYH[ÂˆHÂˆ]ØZ]ÛY[œ]Y\J‘QÒSˆŠNÂˆËÈ[Ø^\ÈØÚÈH\™[Ù\šY\È™Y›Ü™H]ÈØØİ\œ™[˜ÙKX]Ú[™ÈBˆËÈX]\šX[^™\ˆ[™Ù\šY\ÈY]ÜˆØÚÈÜ™\‹‚ˆÛÛœİ\™[H]ØZ]ÛY[œ]Y\J”ÑSPÕÙ\šY\×ÚY”“ÓHYY][™ÜÈÒT‘HYIHS‘Ø[[™\—İÚÙ[Iˆ‹ÚY\Ù\’YJNÂˆYˆ
-\™[œ›İÜÖÌOËœÙ\šY\×ÚY
-H]ØZ]ÛY[œ]Y\J”ÑSPÕY”“ÓHYY][™×ÜÙ\šY\ÈÒT‘HYIHS‘İÛ™\—ÚYIˆ“ÔˆTUH‹Ü\™[œ›İÜÖÌKœÙ\šY\×ÚY\Ù\’YJNÂˆÛÛœİÛİ\˜ÙHH]ØZ]ÛY[œ]Y\Jˆ”ÑSPÕØØ[—ÜÛİ\˜ÙWÚYÙ\šY\×ÚY™Xİ\œ™[˜ÙWÚÙ^H”“ÓHYY][™ÜÈÒT‘HYIHS‘Ø[[™\—İÚÙ[Iˆ“ÔˆTUH‹ˆÚY\Ù\’YKˆ
-NÂˆYˆ
-Ûİ\˜ÙKœ›İÜÖÌJH]ØZ]^ÛYSØØİ\œ™[˜ÙJÛY[Ûİ\˜ÙKœ›İÜÖÌJNÂˆ]ØZ]ÛY[œ]Y\JˆSUH”“ÓH›ÛÚÚ[™ÜÂˆÒT‘HİÛ™\—ÚYH	ˆS‘YY][™×ÚYSˆ
-ˆÑSPÕY”“ÓHYY][™ÜÈÒT‘HYH	HS‘Ø[[™\—İÚÙ[ˆH	‚ˆ
-XˆÚY\Ù\’YKˆ
-NÂˆÛÛœİ™\İ[H]ØZ]ÛY[œ]Y\Jˆ‘SUH”“ÓHYY][™ÜÈÒT‘HYH	HS‘Ø[[™\—İÚÙ[ˆH	ˆ‹ˆÚY\Ù\’YKˆ
-NÂˆYˆ
-\™\İ[œ›İĞÛİ[
-HÂˆ]ØZ]ÛY[œ]Y\J”“ÓPÒÈŠNÂˆ™]\›ˆ™\ÜÛœÙKœİ]\Ê
-KšœÛÛŠÈ\œ›Üˆ“YY][™È›İ›İ[™ˆJNÂˆBˆØØ[”Ûİ\˜ÙRYHÛİ\˜ÙKœ›İÜÖÌOËœØØ[—ÜÛİ\˜ÙWÚYÂˆYˆ
-ØØ[”Ûİ\˜ÙRY
-HÂˆÛÛœİ™Y™\™[˜Ù\ÈH]ØZ]ÛY[œ]Y\Jˆ”ÑSPÕÓÕS•
-
-ŠNš[TÈÛİ[”“ÓHYY][™ÜÈÒT‘HØØ[—ÜÛİ\˜ÙWÚYIH‹ˆÜØØ[”Ûİ\˜ÙRYKˆ
-NÂˆYˆ
-™Y™\™[˜Ù\Ëœ›İÜÖÌK˜Ûİ[OOH
-HÂˆÛÛœİ™[[İ™YH]ØZ]ÛY[œ]Y\Jˆ‘SUH”“ÓHØØ[—ÜÛİ\˜Ù\ÈÒT‘HYIHS‘İÛ™\—ÚYIˆ‘UT“’S‘È›Ø—İ\›‹ˆÜØØ[”Ûİ\˜ÙRY\Ù\’YKˆ
-NÂˆÜœ[™Y›Ø•\›H™[[İ™Yœ›İÜÖÌOË˜›Ø—İ\›[ÂˆBˆBˆ]ØZ]ÛY[œ]Y\JÓÓSRUŠNÂˆYˆ
-Üœ[™Y›Ø•\›
-Bˆ]ØZ][
-Üœ[™Y›Ø•\›
-K˜Ø]Ú
-
-\œ›ÜŠHO‚ˆÛÛœÛÛK™\œ›ÜŠÛİ[›İ[]Hš]˜]HØØ[ˆ›Øˆ‹ÂˆØØ[”Ûİ\˜ÙRYˆ\œ›Üˆİš[™Ê\œ›ÜŠKˆJKˆ
-NÂˆ™]\›ˆ™\ÜÛœÙKœİ]\ÊŒ
-KšœÛÛŠÈİXØÙ\ÜÎˆYHJNÂˆHØ]Ú
-\œ›ÜŠHÂˆ]ØZ]ÛY[œ]Y\J”“ÓPÒÈŠNÂˆ›İÈ\œ›ÜÂˆHš[˜[HÂˆÛY[œ™[X\ÙJ
-NÂˆBˆBˆB‚ˆ™]\›ˆ™\ÜÛœÙKœİ]\Ê
-KšœÛÛŠÈ\œ›Üˆ“›İ›İ[™ˆJNÂˆHØ]Ú
-\œ›ÜŠHÂˆYˆ
-\œ›Üˆ[œİ[˜Ù[ÙˆXÜÑ\œ›ÜŠH™]\›ˆ™\ÜÛœÙKœİ]\Ê
-KšœÛÛŠÙ\œ›Ü™\œ›Ü‹›Y\ÜØYÙ_JNÂˆYˆ
-\œ›Üˆ[œİ[˜Ù[Ùˆ™Xİ\œ™[˜ÙQ\œ›ÜŠH™]\›ˆ™\ÜÛœÙKœİ]\Ê
-KšœÛÛŠÈ\œ›Üˆ\œ›Ü‹›Y\ÜØYÙHJNÂˆÛÛœÛÛK™\œ›ÜŠ“YY][™ÈTH\œ›Üˆ‹\œ›ÜŠNÂˆÛÛœİY\ÜØYÙHH\œ›Üˆ[œİ[˜Ù[Ùˆ\œ›ÜˆÈ\œ›Ü‹›Y\ÜØYÙHˆ”™\]Y\İ˜Z[YÂˆYˆ
-ˆY\ÜØYÙHOOH•]H\È™\]Z\™YˆˆY\ÜØYÙHOOH”İ\[YH\È™\]Z\™Y‚ˆ
-HÂˆ™]\›ˆ™\ÜÛœÙKœİ]\Ê
-KšœÛÛŠÈ\œ›ÜˆY\ÜØYÙHJNÂˆBˆ™]\›ˆ™\ÜÛœÙKœİ]\ÊL
-KšœÛÛŠÈ\œ›Üˆ“YY][™È™\]Y\İ˜Z[YˆJNÂˆBŸB
+    return response.status(404).json({ error: "Not found" });
+  } catch (error) {
+    if (error instanceof IcsError) return response.status(400).json({error:error.message});
+    if (error instanceof RecurrenceError) return response.status(400).json({ error: error.message });
+    console.error("Meeting API error", error);
+    const message = error instanceof Error ? error.message : "Request failed";
+    if (
+      message === "Title is required" ||
+      message === "Start time is required"
+    ) {
+      return response.status(400).json({ error: message });
+    }
+    return response.status(500).json({ error: "Meeting request failed" });
+  }
+}
