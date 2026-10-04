@@ -19,7 +19,7 @@ interface CalendarViewProps {
 }
 
 export function CalendarView({ meetings, onMeetingClick, onDayClick }: CalendarViewProps) {
-  // currentDate is always treated as a "EST-local" reference date for the calendar grid
+  // currentDate is treated as a device-timezone reference date for the calendar grid.
   const [currentDate, setCurrentDate] = useState(() => toZonedTime(new Date(), APP_TZ));
   const [direction, setDirection] = useState(0);
 
@@ -34,7 +34,7 @@ export function CalendarView({ meetings, onMeetingClick, onDayClick }: CalendarV
   const days = eachDayOfInterval({ start: startDate, end: endDate });
   const weekDays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
-  // Group meetings by their EST day string — critical for correct date display
+  // Group meetings by their day in the detected device timezone.
   const meetingsByDay = meetings.reduce((acc, meeting) => {
     const dayStr = estDayKey(meeting.startTime);
     if (!acc[dayStr]) acc[dayStr] = [];
@@ -58,7 +58,7 @@ export function CalendarView({ meetings, onMeetingClick, onDayClick }: CalendarV
           <h2 className="text-2xl font-display font-bold text-foreground">
             {format(currentDate, 'MMMM yyyy')}
           </h2>
-          <p className="text-xs text-muted-foreground mt-0.5">All times in {APP_TZ} ({APP_TZ_LABEL})</p>
+          <p className="text-xs text-muted-foreground mt-0.5">Automatic timezone: {APP_TZ} ({APP_TZ_LABEL})</p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" size="icon" onClick={prevMonth} className="rounded-full w-10 h-10 border-border bg-card hover:bg-muted">
@@ -101,7 +101,7 @@ export function CalendarView({ meetings, onMeetingClick, onDayClick }: CalendarV
               const isCurrentMonth = isSameMonth(day, monthStart);
               const isTodayDate = isSameDay(day, todayInEST);
 
-              // When clicking a day, emit a date treated as midnight EST
+              // Emit the selected date in the detected device timezone.
               const handleDayClick = () => {
                 // We emit the day as a local Date; the form will convert it properly
                 onDayClick(day);

@@ -18,6 +18,12 @@ import RescheduleBooking from "./pages/reschedule-booking";
 import MyBookings from "./pages/my-bookings";
 import PublicPoll from "./pages/public-poll";
 import { DataPrivacy, HowToUse, TermsOfUse } from "./pages/information";
+import { useToast } from "@/hooks/use-toast";
+import {
+  APP_TZ,
+  detectedDeviceTimezone,
+  timezoneAbbreviation,
+} from "@/lib/timezone";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -44,6 +50,65 @@ function ServiceWorkerRegistrar() {
       document.removeEventListener("visibilitychange", checkForUpdate);
     };
   }, []);
+  return null;
+}
+
+const TIMEZONE_CHANGE_NOTICE = "meetmind-timezone-change";
+
+function AutomaticTimezoneMonitor() {
+  const { toast } = useToast();
+
+  useEffect(() => {
+    const savedNotice = sessionStorage.getItem(TIMEZONE_CHANGE_NOTICE);
+    if (savedNotice) {
+      sessionStorage.removeItem(TIMEZONE_CHANGE_NOTICE);
+      try {
+        const { from, to } = JSON.parse(savedNotice) as {
+          from: string;
+          to: string;
+        };
+        toast({
+          title: "Timezone updated automatically",
+          description: `Calendar times changed from ${from} to ${to}. Meeting instants and reminders were not changed.`,
+          duration: 10000,
+        });
+      } catch {
+        // Ignore an invalid or obsolete notice.
+      }
+    }
+
+    let reloading = false;
+    const checkTimezone = () => {
+      if (reloading || document.visibilityState === "hidden") return;
+      const detectedTimezone = detectedDeviceTimezone();
+      if (detectedTimezone === APP_TZ) return;
+
+      reloading = true;
+      sessionStorage.setItem(
+        TIMEZONE_CHANGE_NOTICE,
+        JSON.stringify({
+          from: `${APP_TZ} (${timezoneAbbreviation(APP_TZ)})`,
+          to: `${detectedTimezone} (${timezoneAbbreviation(detectedTimezone)})`,
+        }),
+      );
+      window.location.reload();
+    };
+
+    const checkAfterResume = () => {
+      if (document.visibilityState === "visible") checkTimezone();
+    };
+
+    document.addEventListener("visibilitychange", checkAfterResume);
+    window.addEventListener("focus", checkTimezone);
+    const intervalId = window.setInterval(checkTimezone, 5 * 60 * 1000);
+
+    return () => {
+      document.removeEventListener("visibilitychange", checkAfterResume);
+      window.removeEventListener("focus", checkTimezone);
+      window.clearInterval(intervalId);
+    };
+  }, [toast]);
+
   return null;
 }
 
@@ -120,6 +185,7 @@ function App() {
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <ServiceWorkerRegistrar />
+        <AutomaticTimezoneMonitor />
         <AuthenticatedRequests>
           <Router />
         </AuthenticatedRequests>
