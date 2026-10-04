@@ -21,6 +21,7 @@ function requireSecret(name) {
 
 const clerk = createClerkClient({
   secretKey: process.env.CLERK_SECRET_KEY,
+  publishableKey: process.env.CLERK_PUBLISHABLE_KEY,
 });
 const allowedImageTypes = new Set([
   "image/jpeg",
