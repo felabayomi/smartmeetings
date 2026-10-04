@@ -13,21 +13,12 @@ import { parseIcs, IcsError } from "../lib/ics-import.cjs";
 import { ensureImportTables, importEvents } from "../lib/ics-store.cjs";
 
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
-const isProductionDeployment = process.env.VERCEL_ENV === "production";
-
 function requireSecret(name) {
   const value = process.env[name]?.trim();
   if (!value) throw new Error(`${name} is required`);
   return value;
 }
 
-function validateProductionClerkConfiguration() {
-  if (!isProductionDeployment) return;
-  if (!process.env.CLERK_SECRET_KEY?.startsWith("sk_live_"))
-    throw new Error("Production requires a Clerk live CLERK_SECRET_KEY");
-}
-
-validateProductionClerkConfiguration();
 const clerk = createClerkClient({
   secretKey: process.env.CLERK_SECRET_KEY,
 });

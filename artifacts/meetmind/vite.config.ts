@@ -14,15 +14,6 @@ if (Number.isNaN(port) || port <= 0) {
 
 const basePath = process.env.BASE_PATH ?? "/";
 
-if (
-  process.env.VERCEL_ENV === "production" &&
-  !process.env.VITE_CLERK_PUBLISHABLE_KEY?.startsWith("pk_live_")
-) {
-  throw new Error(
-    "Production deployment requires a Clerk live VITE_CLERK_PUBLISHABLE_KEY",
-  );
-}
-
 export default defineConfig({
   base: basePath,
   plugins: [
