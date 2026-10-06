@@ -616,6 +616,34 @@ const extractedMeetingSchema = {
     meetingUrl: { type: ["string", "null"] },
     notes: { type: ["string", "null"] },
     confidence: { type: ["number", "null"], minimum: 0, maximum: 1 },
+    reviewFlags: {
+      type: "array",
+      maxItems: 12,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          field: {
+            type: "string",
+            enum: [
+              "title",
+              "date",
+              "startTime",
+              "endTime",
+              "timezone",
+              "recurrence",
+              "location",
+              "organizer",
+              "meetingUrl",
+            ],
+          },
+          reason: { type: "string" },
+        },
+        required: ["field", "reason"],
+      },
+      description:
+        "Only fields that are ambiguous, inferred, partly obscured, internally inconsistent, or otherwise need focused human review. Do not flag an optional field merely because it is absent.",
+    },
     recurrence: {
       type: ["object", "null"], additionalProperties: false,
       properties: {
@@ -646,6 +674,7 @@ const extractedMeetingSchema = {
     "meetingUrl",
     "notes",
     "confidence",
+    "reviewFlags",
     "recurrence",
   ],
 };
@@ -806,7 +835,7 @@ async function extractMeeting(request, response, userId) {
           content: [
             {
               type: "input_text",
-              text: `Extract EVERY distinct meeting, appointment, or schedule row visible in this image, in top-to-bottom order. Return one array item per distinct event; never merge separate rows. Identify the named person as organizer when appropriate. If no event title is shown, use "Meeting with [person's name]" rather than inventing a generic title. Resolve relative dates using today's date, ${new Date().toISOString().slice(0, 10)}. Return startTime and endTime as ISO 8601 timestamps with the correct UTC offset. Also return the original event wall-clock value without an offset as sourceStartLocal/sourceEndLocal (yyyy-MM-dd'T'HH:mm:ss) and its IANA zone as sourceTimezone. Treat the invitation's stated event timezone as the source, not a separately displayed viewer-local equivalent. If the image explicitly shows an equivalent time in a second timezone, return that wall-clock value as alternateStartLocal and its IANA zone as alternateTimezone. Preserve calendar dates exactly: equivalent times may fall on different dates. Only when the image gives no timezone, use ${validTimezone(userTimezone) ? userTimezone : "UTC"} as sourceTimezone. When an end time, location, URL, alternate time, or other value is not visible, return null and do not guess.`,
+              text: `Extract EVERY distinct meeting, appointment, or schedule row visible in this image, in top-to-bottom order. Return one array item per distinct event; never merge separate rows. Identify the named person as organizer when appropriate. If no event title is shown, use "Meeting with [person's name]" rather than inventing a generic title. Resolve relative dates using today's date, ${new Date().toISOString().slice(0, 10)}. Return startTime and endTime as ISO 8601 timestamps with the correct UTC offset. Also return the original event wall-clock value without an offset as sourceStartLocal/sourceEndLocal (yyyy-MM-dd'T'HH:mm:ss) and its IANA zone as sourceTimezone. Treat the invitation's stated event timezone as the source, not a separately displayed viewer-local equivalent. If the image explicitly shows an equivalent time in a second timezone, return that wall-clock value as alternateStartLocal and its IANA zone as alternateTimezone. Preserve calendar dates exactly: equivalent times may fall on different dates. Only when the image gives no timezone, use ${validTimezone(userTimezone) ? userTimezone : "UTC"} as sourceTimezone and add a timezone reviewFlag explaining that the timezone was inferred from the user's device. Add a concise reviewFlag for every field that is ambiguous, inferred, partly obscured, or internally inconsistent, including dates with an unclear day/month/year or times with unclear AM/PM. Do not flag optional information merely because it is absent. When an end time, location, URL, alternate time, or other value is not visible, return null and do not guess.`,
             },
             {
               type: "input_image",
@@ -863,6 +892,34 @@ async function extractMeeting(request, response, userId) {
     return Number.isNaN(instant.getTime()) ? null : instant;
   };
   for (const item of parsed.meetings) {
+    if (!Array.isArray(item.reviewFlags)) item.reviewFlags = [];
+    if (!item.title) {
+      item.reviewFlags.push({
+        field: "title",
+        reason: "No meeting title was clearly visible.",
+      });
+    }
+    if (!item.sourceStartLocal && !item.startTime) {
+      item.reviewFlags.push({
+        field: "startTime",
+        reason: "No reliable meeting date and start time were found.",
+      });
+    }
+    if (!validTimezone(item.sourceTimezone)) {
+      item.reviewFlags.push({
+        field: "timezone",
+        reason: "The meeting timezone could not be verified.",
+      });
+    }
+    item.reviewFlags = item.reviewFlags.filter(
+      (flag, index, flags) =>
+        flag?.field &&
+        flag?.reason &&
+        flags.findIndex(
+          (candidate) =>
+            candidate?.field === flag.field && candidate?.reason === flag.reason,
+        ) === index,
+    );
     const sourceStart = localInstant(
       item.sourceStartLocal,
       item.sourceTimezone,

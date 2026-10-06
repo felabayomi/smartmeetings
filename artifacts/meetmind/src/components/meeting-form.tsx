@@ -89,6 +89,25 @@ interface MeetingFormProps {
 }
 
 type RecurrenceRule = { frequency: string; interval: number; timezone: string; weekdays: number[]; count: number | null; until: string | null };
+type AiReviewField = "title" | "date" | "startTime" | "endTime" | "timezone" | "recurrence" | "location" | "organizer" | "meetingUrl";
+type AiReviewFlag = { field: AiReviewField; reason: string };
+const AI_REVIEW_FIELDS = new Set<AiReviewField>([
+  "title", "date", "startTime", "endTime", "timezone", "recurrence", "location", "organizer", "meetingUrl",
+]);
+
+function reviewFieldLabel(field: AiReviewField): string {
+  return {
+    title: "Title",
+    date: "Date",
+    startTime: "Start time",
+    endTime: "End time",
+    timezone: "Timezone",
+    recurrence: "Repeat rule",
+    location: "Location",
+    organizer: "Organizer",
+    meetingUrl: "Meeting link",
+  }[field];
+}
 
 export function MeetingForm({
   initialData,
@@ -166,7 +185,7 @@ export function MeetingForm({
     },
   });
 
-  // Format each absolute timestamp exactly once in the app's Eastern timezone.
+  // Format each absolute timestamp exactly once in the event timezone.
   const formatForInput = (dateString?: string | null) =>
     dateString ? formatInTimeZone(dateString, initialEventTimezone, "yyyy-MM-dd'T'HH:mm") : "";
 
@@ -180,6 +199,37 @@ export function MeetingForm({
   };
   const [reminderCount, setReminderCount] = useState(countInitialSlots);
   const [aiTimeVerified, setAiTimeVerified] = useState(!isAiExtracted);
+  const reviewFlags = isAiExtracted && Array.isArray((initialData as any)?.reviewFlags)
+    ? ((initialData as any).reviewFlags as AiReviewFlag[]).filter(
+        (flag) =>
+          flag &&
+          AI_REVIEW_FIELDS.has(flag.field) &&
+          typeof flag.reason === "string" &&
+          flag.reason.trim().length > 0,
+      )
+    : [];
+  const extractionConfidence = typeof (initialData as any)?.confidence === "number"
+    ? (initialData as any).confidence as number
+    : null;
+  const focusedReviewFlags = reviewFlags.length
+    ? reviewFlags
+    : extractionConfidence !== null && extractionConfidence < 0.8
+      ? [{ field: "startTime" as const, reason: "The overall extraction confidence is low. Compare the important details with the invitation." }]
+      : [];
+  const flagsFor = (...fields: AiReviewField[]) =>
+    focusedReviewFlags.filter((flag) => fields.includes(flag.field));
+  const reviewInputClass = (...fields: AiReviewField[]) =>
+    flagsFor(...fields).length
+      ? "border-amber-500 bg-amber-50/70 ring-2 ring-amber-300/50 dark:bg-amber-950/20"
+      : "";
+  const reviewMessage = (...fields: AiReviewField[]) => {
+    const messages = flagsFor(...fields).map((flag) => flag.reason);
+    return messages.length ? (
+      <p className="mt-1 text-xs font-medium text-amber-700 dark:text-amber-300">
+        Needs attention: {messages.join(" ")}
+      </p>
+    ) : null;
+  };
   const sourceTimezone =
     (initialData as any)?.sourceTimezone || initialData?.timezone;
   const timezoneReview =
@@ -207,7 +257,7 @@ export function MeetingForm({
       title: initialData?.title || "",
       startTime:
         formatForInput(initialData?.startTime) ||
-        formatForInput(new Date().toISOString()),
+        (isAiExtracted ? "" : formatForInput(new Date().toISOString())),
       endTime: formatForInput(initialData?.endTime) || "",
       description: initialData?.description || "",
       location: initialData?.location || "",
@@ -318,24 +368,42 @@ export function MeetingForm({
       <div className="overflow-y-auto p-6 flex-1 custom-scrollbar">
         <Form {...form}>
           <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
-            {timezoneReview && (
+            {isAiExtracted && (
               <div className="rounded-2xl border-2 border-amber-400 bg-amber-50 p-4 text-amber-950 dark:bg-amber-950/30 dark:text-amber-100">
                 <div className="flex gap-3">
                   <AlertTriangle className="h-5 w-5 flex-shrink-0 mt-0.5" />
                   <div>
                     <p className="font-bold">
-                      Verify the date, time, and timezone
+                      {focusedReviewFlags.length
+                        ? `${focusedReviewFlags.length} extracted ${focusedReviewFlags.length === 1 ? "field needs" : "fields need"} extra attention`
+                        : "Verify the date, time, and timezone"}
                     </p>
-                    {timezoneReview.source && (
+                    {focusedReviewFlags.length > 0 && (
+                      <ul className="mt-2 space-y-1 text-sm list-disc pl-5">
+                        {focusedReviewFlags.map((flag, index) => (
+                          <li key={`${flag.field}-${index}`}>
+                            <strong>{reviewFieldLabel(flag.field)}:</strong> {flag.reason}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {focusedReviewFlags.length === 0 && (
+                      <p className="text-sm mt-2">
+                        No specific uncertainty was detected. Compare the important details with the invitation before saving.
+                      </p>
+                    )}
+                    {timezoneReview?.source && (
                       <p className="text-sm mt-2">
                         <strong>Invitation time:</strong>{" "}
                         {timezoneReview.source} ({sourceTimezone})
                       </p>
                     )}
-                    <p className="text-sm mt-1">
-                      <strong>Your calendar:</strong> {timezoneReview.local} (
-                      {APP_TZ})
-                    </p>
+                    {timezoneReview && (
+                      <p className="text-sm mt-1">
+                        <strong>Your calendar:</strong> {timezoneReview.local} (
+                        {APP_TZ})
+                      </p>
+                    )}
                     <label className="mt-3 flex items-start gap-2 text-sm font-semibold cursor-pointer">
                       <input
                         type="checkbox"
@@ -345,7 +413,7 @@ export function MeetingForm({
                           setAiTimeVerified(event.target.checked)
                         }
                       />
-                      I verified that the calendar date and time are correct.
+                      I compared the highlighted details with the invitation and verified that the calendar date, time, and timezone are correct.
                     </label>
                   </div>
                 </div>
@@ -360,8 +428,9 @@ export function MeetingForm({
                 </select>
               </label>}
               <label className="block space-y-1 text-sm">Event timezone (IANA name)
-                <Input value={eventTimezone} onChange={e=>setEventTimezone(e.target.value)} placeholder="America/New_York" />
+                <Input className={reviewInputClass("timezone")} value={eventTimezone} onChange={e=>setEventTimezone(e.target.value)} placeholder="America/New_York" />
               </label>
+              {reviewMessage("timezone")}
               <p className="text-xs text-muted-foreground">The start and end fields below use this timezone. Repeats keep the same local time through daylight-saving changes.</p>
               <fieldset disabled={Boolean(initialData?.seriesId && seriesScope === "single")} className="space-y-3 disabled:opacity-60">
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -382,7 +451,7 @@ export function MeetingForm({
               </fieldset>
               {frequency !== "none" && <p className="text-xs text-muted-foreground">Future occurrences are populated about 18 months ahead and extended automatically. Invalid dates (such as February 30) and nonexistent daylight-saving times are skipped. Each occurrence blocks booking availability and has its own reminders.</p>}
               {initialData?.seriesId && seriesScope !== "single" && <p className="text-xs text-amber-700">This replaces the selected part of the series, including individual exceptions. For “this and future,” the occurrence count starts again here. To end the series, choose “this and future” and use the delete button.</p>}
-              {isAiExtracted && <p className="text-sm font-medium">Check the repeat rule against your invitation before saving. Scanning does not save the series automatically.</p>}
+              {isAiExtracted && <p className={cn("text-sm font-medium", flagsFor("recurrence").length && "rounded-lg bg-amber-100 p-2 text-amber-900 dark:bg-amber-950/30 dark:text-amber-200")}>Check the repeat rule against your invitation before saving. Scanning does not save the series automatically.{flagsFor("recurrence").length ? ` ${flagsFor("recurrence").map(flag => flag.reason).join(" ")}` : ""}</p>}
             </section>
 
             <FormField
@@ -396,10 +465,11 @@ export function MeetingForm({
                   <FormControl>
                     <Input
                       placeholder="Team Sync"
-                      className="text-lg font-medium h-12 rounded-xl bg-background border-border shadow-sm focus-visible:ring-primary/20"
+                      className={cn("text-lg font-medium h-12 rounded-xl bg-background border-border shadow-sm focus-visible:ring-primary/20", reviewInputClass("title"))}
                       {...field}
                     />
                   </FormControl>
+                  {reviewMessage("title")}
                   <FormMessage />
                 </FormItem>
               )}
@@ -418,10 +488,11 @@ export function MeetingForm({
                     <FormControl>
                       <Input
                         type="datetime-local"
-                        className="h-11 rounded-xl bg-background"
+                        className={cn("h-11 rounded-xl bg-background", reviewInputClass("date", "startTime"))}
                         {...field}
                       />
                     </FormControl>
+                    {reviewMessage("date", "startTime")}
                     <FormMessage />
                   </FormItem>
                 )}
@@ -438,11 +509,12 @@ export function MeetingForm({
                     <FormControl>
                       <Input
                         type="datetime-local"
-                        className="h-11 rounded-xl bg-background"
+                        className={cn("h-11 rounded-xl bg-background", reviewInputClass("endTime"))}
                         {...field}
                         value={field.value || ""}
                       />
                     </FormControl>
+                    {reviewMessage("endTime")}
                     <FormMessage />
                   </FormItem>
                 )}
@@ -461,11 +533,12 @@ export function MeetingForm({
                     <FormControl>
                       <Input
                         placeholder="Room 4B or Address"
-                        className="h-11 rounded-xl bg-background"
+                        className={cn("h-11 rounded-xl bg-background", reviewInputClass("location"))}
                         {...field}
                         value={field.value || ""}
                       />
                     </FormControl>
+                    {reviewMessage("location")}
                     <FormMessage />
                   </FormItem>
                 )}
@@ -483,11 +556,12 @@ export function MeetingForm({
                       <Input
                         placeholder="https://zoom.us/..."
                         type="url"
-                        className="h-11 rounded-xl bg-background"
+                        className={cn("h-11 rounded-xl bg-background", reviewInputClass("meetingUrl"))}
                         {...field}
                         value={field.value || ""}
                       />
                     </FormControl>
+                    {reviewMessage("meetingUrl")}
                     <FormMessage />
                   </FormItem>
                 )}
@@ -505,11 +579,12 @@ export function MeetingForm({
                   <FormControl>
                     <Input
                       placeholder="Name or Email"
-                      className="h-11 rounded-xl bg-background"
+                      className={cn("h-11 rounded-xl bg-background", reviewInputClass("organizer"))}
                       {...field}
                       value={field.value || ""}
                     />
                   </FormControl>
+                  {reviewMessage("organizer")}
                   <FormMessage />
                 </FormItem>
               )}
