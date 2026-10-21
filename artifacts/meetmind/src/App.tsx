@@ -18,6 +18,7 @@ import RescheduleBooking from "./pages/reschedule-booking";
 import MyBookings from "./pages/my-bookings";
 import PublicPoll from "./pages/public-poll";
 import { DataPrivacy, HowToUse, TermsOfUse } from "./pages/information";
+import CalendarSettings from "./pages/calendar-settings";
 import { useToast } from "@/hooks/use-toast";
 import {
   APP_TZ,
@@ -127,6 +128,7 @@ function ProtectedApp() {
       <Route path="/app/list" component={MeetingsList} />
       <Route path="/app/scheduling" component={Scheduling} />
       <Route path="/app/my-bookings" component={MyBookings} />
+      <Route path="/app/settings" component={CalendarSettings} />
       <Route component={NotFound} />
     </Switch>
   );

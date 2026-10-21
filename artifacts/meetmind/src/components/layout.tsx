@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link, useLocation } from 'wouter';
-import { Calendar as CalendarIcon, CalendarCheck2, CalendarClock, List, Menu, X } from 'lucide-react';
+import { Calendar as CalendarIcon, CalendarCheck2, CalendarClock, CalendarCog, List, Menu, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -32,6 +32,7 @@ export function Layout({ children }: LayoutProps) {
     { path: '/app/list', label: 'All Meetings', icon: List },
     { path: '/app/scheduling', label: 'Scheduling', icon: CalendarClock },
     { path: '/app/my-bookings', label: 'Bookings', icon: CalendarCheck2 },
+    { path: '/app/settings', label: 'Calendar Settings', icon: CalendarCog },
   ];
 
   return (

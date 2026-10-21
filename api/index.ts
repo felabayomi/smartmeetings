@@ -1,7 +1,7 @@
 // @ts-nocheck
 import pg from "pg";
 import { createClerkClient } from "@clerk/backend";
-import { randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import webPush from "web-push";
 import { del, get, put } from "@vercel/blob";
@@ -32,6 +32,7 @@ const allowedImageTypes = new Set([
 let schedulingReady;
 let pushReady;
 let scanStorageReady;
+let calendarFeedReady;
 
 let vapidConfiguration;
 
@@ -107,6 +108,154 @@ function ensureScanStorageTables() {
     CREATE INDEX IF NOT EXISTS meetings_scan_source_idx ON meetings(scan_source_id) WHERE scan_source_id IS NOT NULL;
   `);
   return scanStorageReady;
+}
+
+function ensureCalendarFeedTables() {
+  if (!calendarFeedReady)
+    calendarFeedReady = pool.query(`
+    CREATE TABLE IF NOT EXISTS calendar_feed_tokens (
+      user_id TEXT PRIMARY KEY,
+      token_hash TEXT UNIQUE NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      revoked_at TIMESTAMPTZ
+    );
+    CREATE TABLE IF NOT EXISTS calendar_feed_cancellations (
+      owner_id TEXT NOT NULL,
+      event_uid TEXT NOT NULL,
+      title TEXT NOT NULL,
+      start_time TIMESTAMPTZ NOT NULL,
+      end_time TIMESTAMPTZ,
+      timezone TEXT,
+      cancelled_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (owner_id,event_uid)
+    );
+    CREATE INDEX IF NOT EXISTS calendar_feed_cancellations_owner_idx
+      ON calendar_feed_cancellations(owner_id,cancelled_at DESC);
+  `).catch((error) => {
+      calendarFeedReady = undefined;
+      throw error;
+    });
+  return calendarFeedReady;
+}
+
+function calendarFeedTokenHash(token) {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+function calendarEventUid(id) {
+  return `meetmind-${id}@meetminder.app`;
+}
+
+function formatIcsUtc(value) {
+  return new Date(value)
+    .toISOString()
+    .replace(/[-:]/g, "")
+    .replace(/\.\d{3}Z$/, "Z");
+}
+
+function escapeIcsText(value) {
+  return String(value ?? "")
+    .replace(/\\/g, "\\\\")
+    .replace(/\r?\n/g, "\\n")
+    .replace(/;/g, "\\;")
+    .replace(/,/g, "\\,");
+}
+
+function foldIcsLine(line) {
+  const output = [];
+  let current = "";
+  for (const character of String(line)) {
+    const candidate = current + character;
+    if (current && Buffer.byteLength(candidate, "utf8") > 75) {
+      output.push(current);
+      current = ` ${character}`;
+    } else {
+      current = candidate;
+    }
+  }
+  output.push(current);
+  return output.join("\r\n");
+}
+
+function buildCalendarFeed(meetings, cancellations, calendarName, timezone) {
+  const lines = [
+    "BEGIN:VCALENDAR",
+    "PRODID:-//The Felix Consulting Group//MeetMinder Calendar//EN",
+    "VERSION:2.0",
+    "CALSCALE:GREGORIAN",
+    "METHOD:PUBLISH",
+    `X-WR-CALNAME:${escapeIcsText(calendarName)}`,
+    `X-WR-TIMEZONE:${escapeIcsText(timezone || "UTC")}`,
+    "REFRESH-INTERVAL;VALUE=DURATION:PT15M",
+    "X-PUBLISHED-TTL:PT15M",
+  ];
+
+  for (const row of meetings) {
+    const description = [row.description, row.notes]
+      .filter(Boolean)
+      .join("\n\n");
+    lines.push(
+      "BEGIN:VEVENT",
+      `UID:${calendarEventUid(row.id)}`,
+      `DTSTAMP:${formatIcsUtc(row.updated_at || row.created_at || new Date())}`,
+      `LAST-MODIFIED:${formatIcsUtc(row.updated_at || row.created_at || new Date())}`,
+      `DTSTART:${formatIcsUtc(row.start_time)}`,
+    );
+    if (row.end_time) lines.push(`DTEND:${formatIcsUtc(row.end_time)}`);
+    lines.push(
+      `SUMMARY:${escapeIcsText(row.title)}`,
+      "STATUS:CONFIRMED",
+      "TRANSP:OPAQUE",
+      `SEQUENCE:${Math.max(0, Math.floor(new Date(row.updated_at || row.created_at || 0).getTime() / 1000))}`,
+    );
+    if (description) lines.push(`DESCRIPTION:${escapeIcsText(description)}`);
+    if (row.location) lines.push(`LOCATION:${escapeIcsText(row.location)}`);
+    if (row.meeting_url) lines.push(`URL:${escapeIcsText(row.meeting_url)}`);
+    if (row.timezone)
+      lines.push(`X-MEETMIND-TIMEZONE:${escapeIcsText(row.timezone)}`);
+    if (row.series_id)
+      lines.push(`X-MEETMIND-SERIES-ID:${escapeIcsText(row.series_id)}`);
+    lines.push("END:VEVENT");
+  }
+
+  for (const row of cancellations) {
+    lines.push(
+      "BEGIN:VEVENT",
+      `UID:${row.event_uid}`,
+      `DTSTAMP:${formatIcsUtc(row.cancelled_at)}`,
+      `LAST-MODIFIED:${formatIcsUtc(row.cancelled_at)}`,
+      `DTSTART:${formatIcsUtc(row.start_time)}`,
+      `SUMMARY:${escapeIcsText(row.title)}`,
+      "STATUS:CANCELLED",
+      "SEQUENCE:2147483647",
+      "END:VEVENT",
+    );
+  }
+
+  lines.push("END:VCALENDAR");
+  return `${lines.map(foldIcsLine).join("\r\n")}\r\n`;
+}
+
+async function recordCalendarFeedCancellations(
+  client,
+  userId,
+  predicate,
+  predicateValues = [],
+) {
+  await client.query(
+    `INSERT INTO calendar_feed_cancellations
+      (owner_id,event_uid,title,start_time,end_time,timezone,cancelled_at)
+    SELECT m.calendar_token,'meetmind-' || m.id::text || '@meetminder.app',
+      m.title,m.start_time,m.end_time,m.timezone,NOW()
+    FROM meetings m
+    WHERE m.calendar_token=$1 AND (${predicate})
+    ON CONFLICT (owner_id,event_uid) DO UPDATE SET
+      title=EXCLUDED.title,start_time=EXCLUDED.start_time,
+      end_time=EXCLUDED.end_time,timezone=EXCLUDED.timezone,
+      cancelled_at=EXCLUDED.cancelled_at`,
+    [userId, ...predicateValues],
+  );
 }
 
 async function removeExpiredUnlinkedScans(userId) {
@@ -987,6 +1136,66 @@ export default async function handler(request, response) {
 
   try {
     if (path === "/healthz") return response.status(200).json({ status: "ok" });
+    const publicCalendarFeed = path.match(
+      /^\/calendar-subscription\/([A-Za-z0-9_-]{43})\.ics$/,
+    );
+    if (
+      publicCalendarFeed &&
+      (request.method === "GET" || request.method === "HEAD")
+    ) {
+      await ensureCalendarFeedTables();
+      const tokenHash = calendarFeedTokenHash(publicCalendarFeed[1]);
+      const subscription = await pool.query(
+        `SELECT user_id FROM calendar_feed_tokens
+        WHERE token_hash=$1 AND revoked_at IS NULL`,
+        [tokenHash],
+      );
+      if (!subscription.rowCount)
+        return response.status(404).send("Calendar subscription not found");
+
+      const ownerId = subscription.rows[0].user_id;
+      await ensureSchedulingTables();
+      await materializeSeries(pool, ownerId);
+      const [meetings, cancellations, profile] = await Promise.all([
+        pool.query(
+          `SELECT id,title,description,start_time,end_time,timezone,location,
+            meeting_url,notes,series_id,created_at,updated_at
+          FROM meetings WHERE calendar_token=$1 ORDER BY start_time,id`,
+          [ownerId],
+        ),
+        pool.query(
+          `SELECT event_uid,title,start_time,end_time,timezone,cancelled_at
+          FROM calendar_feed_cancellations WHERE owner_id=$1
+          ORDER BY cancelled_at,event_uid`,
+          [ownerId],
+        ),
+        pool.query(
+          "SELECT display_name,timezone FROM scheduling_profiles WHERE user_id=$1",
+          [ownerId],
+        ),
+      ]);
+      const calendarName = profile.rows[0]?.display_name
+        ? `${profile.rows[0].display_name} — MeetMinder`
+        : "MeetMinder Calendar";
+      const calendarTimezone = profile.rows[0]?.timezone || "UTC";
+      const feed = buildCalendarFeed(
+        meetings.rows,
+        cancellations.rows,
+        calendarName,
+        calendarTimezone,
+      );
+      response.setHeader("Content-Type", "text/calendar; charset=utf-8");
+      response.setHeader(
+        "Content-Disposition",
+        'inline; filename="meetminder-calendar.ics"',
+      );
+      response.setHeader("Cache-Control", "private, no-store, max-age=0");
+      response.setHeader("Referrer-Policy", "no-referrer");
+      response.setHeader("X-Content-Type-Options", "nosniff");
+      response.setHeader("X-Robots-Tag", "noindex, nofollow");
+      if (request.method === "HEAD") return response.status(200).end();
+      return response.status(200).send(feed);
+    }
     if (path === "/push/vapid-key" && request.method === "GET")
       return response.status(200).json(ensureVapidConfiguration());
     if (path === "/push/send-reminders" && request.method === "GET") {
@@ -1400,6 +1609,58 @@ export default async function handler(request, response) {
     const userId = await authenticatedUserId(request);
     if (!userId)
       return response.status(401).json({ error: "Sign in required" });
+
+    if (path === "/calendar-subscription" && request.method === "GET") {
+      await ensureCalendarFeedTables();
+      const current = await pool.query(
+        `SELECT created_at,updated_at FROM calendar_feed_tokens
+        WHERE user_id=$1 AND revoked_at IS NULL`,
+        [userId],
+      );
+      return response.status(200).json({
+        active: Boolean(current.rowCount),
+        createdAt: current.rows[0]?.created_at || null,
+        updatedAt: current.rows[0]?.updated_at || null,
+      });
+    }
+    if (path === "/calendar-subscription" && request.method === "POST") {
+      await ensureCalendarFeedTables();
+      const token = randomBytes(32).toString("base64url");
+      const tokenHash = calendarFeedTokenHash(token);
+      const current = await pool.query(
+        `INSERT INTO calendar_feed_tokens
+          (user_id,token_hash,created_at,updated_at,revoked_at)
+        VALUES ($1,$2,NOW(),NOW(),NULL)
+        ON CONFLICT (user_id) DO UPDATE SET
+          token_hash=EXCLUDED.token_hash,updated_at=NOW(),revoked_at=NULL
+        RETURNING created_at,updated_at`,
+        [userId, tokenHash],
+      );
+      const forwardedProto = String(
+        request.headers["x-forwarded-proto"] || "https",
+      ).split(",")[0];
+      const forwardedHost = String(
+        request.headers["x-forwarded-host"] || request.headers.host || "",
+      ).split(",")[0];
+      const origin = process.env.VERCEL_ENV === "production"
+        ? "https://www.meetminder.app"
+        : `${forwardedProto}://${forwardedHost}`;
+      return response.status(201).json({
+        active: true,
+        createdAt: current.rows[0].created_at,
+        updatedAt: current.rows[0].updated_at,
+        feedUrl: `${origin}/api/calendar-subscription/${token}.ics`,
+      });
+    }
+    if (path === "/calendar-subscription" && request.method === "DELETE") {
+      await ensureCalendarFeedTables();
+      await pool.query(
+        `UPDATE calendar_feed_tokens
+        SET revoked_at=NOW(),updated_at=NOW() WHERE user_id=$1`,
+        [userId],
+      );
+      return response.status(200).json({ active: false });
+    }
 
     if (path.startsWith("/meetings")) await ensureImportTables(pool);
     if ((path === "/meetings/import-preview" || path === "/meetings/import") && request.method === "POST") {
@@ -1828,6 +2089,7 @@ export default async function handler(request, response) {
     const seriesMatch = path.match(/^\/meetings\/(\d+)\/series$/);
     if (seriesMatch && request.method === "POST") {
       await ensureRecurrenceTables(pool);
+      await ensureCalendarFeedTables();
       const { action, scope } = request.body || {};
       if (!["update", "delete"].includes(action) || !["all", "future"].includes(scope))
         return response.status(400).json({ error: "Invalid series action" });
@@ -1857,6 +2119,12 @@ export default async function handler(request, response) {
           replacement = await createSeries(client,userId,{...values,sourceScanId:selected.scan_source_id},request.body.recurrence);
         }
         if (series) {
+          await recordCalendarFeedCancellations(
+            client,
+            userId,
+            "m.series_id=$2 AND ($3::text='all' OR m.recurrence_key >= $4)",
+            [series.id, scope, selected.recurrence_key],
+          );
           if (scope === "all") await client.query("UPDATE meeting_series SET active=FALSE WHERE id=$1",[series.id]);
           else await client.query("UPDATE meeting_series SET stop_before=$2 WHERE id=$1",[series.id,selected.recurrence_key]);
           await client.query("DELETE FROM meetings WHERE calendar_token=$1 AND series_id=$2 AND ($3::text='all' OR recurrence_key >= $4)",[userId,series.id,scope,selected.recurrence_key]);
@@ -1865,6 +2133,12 @@ export default async function handler(request, response) {
           // into recurring series through a calendar edit.
           const linked = await client.query("SELECT 1 FROM bookings WHERE meeting_id=$1",[selected.id]);
           if (linked.rowCount) throw new RecurrenceError("A guest booking cannot be converted into a recurring series.");
+          await recordCalendarFeedCancellations(
+            client,
+            userId,
+            "m.id=$2",
+            [selected.id],
+          );
           await client.query("DELETE FROM meetings WHERE id=$1 AND calendar_token=$2",[selected.id,userId]);
         }
         await client.query("COMMIT");
@@ -1908,6 +2182,7 @@ export default async function handler(request, response) {
       }
       if (request.method === "DELETE") {
         await ensureScanStorageTables();
+        await ensureCalendarFeedTables();
         const client = await pool.connect();
         let orphanedBlobUrl = null;
         let scanSourceId = null;
@@ -1922,6 +2197,12 @@ export default async function handler(request, response) {
             [id, userId],
           );
           if (source.rows[0]) await excludeOccurrence(client, source.rows[0]);
+          await recordCalendarFeedCancellations(
+            client,
+            userId,
+            "m.id=$2",
+            [id],
+          );
           await client.query(
             `DELETE FROM bookings
             WHERE owner_id = $2 AND meeting_id IN (
