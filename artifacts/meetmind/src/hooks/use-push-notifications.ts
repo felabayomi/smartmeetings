@@ -41,12 +41,14 @@ export type PushState =
   | "loading";
 
 export function usePushNotifications() {
-  const { getToken } = useAuth();
+  const { getToken, isLoaded, isSignedIn } = useAuth();
   const [state, setState] = useState<PushState>("loading");
 
   const saveSubscription = useCallback(
     async (sub: PushSubscription) => {
+      if (!isLoaded || !isSignedIn) return false;
       const token = await getToken();
+      if (!token) throw new Error("Authentication is temporarily unavailable");
       const response = await fetch(`${API_BASE}/api/push/subscribe`, {
         method: "POST",
         headers: {
@@ -60,8 +62,9 @@ export function usePushNotifications() {
           (await response.json().catch(() => null))?.error ||
             "Failed to save notification subscription",
         );
+      return true;
     },
-    [getToken],
+    [getToken, isLoaded, isSignedIn],
   );
 
   useEffect(() => {
@@ -77,12 +80,27 @@ export function usePushNotifications() {
     const refreshState = async () => {
       try {
         const reg = await navigator.serviceWorker.ready;
-        const vapidKey = urlBase64ToUint8Array(await getVapidKey());
         let sub = await reg.pushManager.getSubscription();
         if (cancelled) return;
+
+        // A browser push subscription continues to work when a Clerk session
+        // expires or the PWA is closed. Never remove it merely because the
+        // user is temporarily signed out or offline.
+        if (!isLoaded || !isSignedIn) {
+          setState(
+            sub && Notification.permission === "granted"
+              ? "subscribed"
+              : "prompt",
+          );
+          return;
+        }
+
+        const vapidKey = urlBase64ToUint8Array(await getVapidKey());
         if (sub) {
           if (!subscriptionUsesKey(sub, vapidKey)) {
             const token = await getToken();
+            if (!token)
+              throw new Error("Authentication is temporarily unavailable");
             await fetch(`${API_BASE}/api/push/unsubscribe`, {
               method: "POST",
               headers: {
@@ -98,7 +116,7 @@ export function usePushNotifications() {
             });
           }
           await saveSubscription(sub);
-          setState("subscribed");
+          if (!cancelled) setState("subscribed");
           return;
         }
 
@@ -106,8 +124,19 @@ export function usePushNotifications() {
         // subscription. This prevents an endless enable prompt on mobile.
         if (!cancelled) setState("prompt");
       } catch (err) {
-        console.warn("Push notifications are not configured:", err);
-        if (!cancelled) setState("unsupported");
+        console.warn("Push notification check will retry:", err);
+        if (cancelled) return;
+        try {
+          const reg = await navigator.serviceWorker.ready;
+          const existing = await reg.pushManager.getSubscription();
+          setState(
+            existing && Notification.permission === "granted"
+              ? "subscribed"
+              : "prompt",
+          );
+        } catch {
+          setState("prompt");
+        }
       }
     };
 
@@ -117,16 +146,22 @@ export function usePushNotifications() {
     };
     document.addEventListener("visibilitychange", refreshAfterResume);
     window.addEventListener("pageshow", refreshAfterResume);
+    window.addEventListener("focus", refreshAfterResume);
+    window.addEventListener("online", refreshAfterResume);
+    const repairInterval = window.setInterval(refreshState, 15 * 60 * 1000);
 
     return () => {
       cancelled = true;
       document.removeEventListener("visibilitychange", refreshAfterResume);
       window.removeEventListener("pageshow", refreshAfterResume);
+      window.removeEventListener("focus", refreshAfterResume);
+      window.removeEventListener("online", refreshAfterResume);
+      window.clearInterval(repairInterval);
     };
-  }, [saveSubscription]);
+  }, [getToken, isLoaded, isSignedIn, saveSubscription]);
 
   useEffect(() => {
-    if (state !== "subscribed") return;
+    if (state !== "subscribed" || !isSignedIn) return;
     let cancelled = false;
     const runReminders = async () => {
       if (document.visibilityState !== "visible" || cancelled) return;
@@ -146,7 +181,7 @@ export function usePushNotifications() {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [getToken, state]);
+  }, [getToken, isSignedIn, state]);
 
   const subscribe = useCallback(async () => {
     setState("loading");

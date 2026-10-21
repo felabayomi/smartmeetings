@@ -28,7 +28,7 @@ import { IcsImportButton } from "@/components/ics-import-button";
 import { MeetingDetailModal } from "@/components/meeting-detail-modal";
 import { DayModal } from "@/components/day-modal";
 import { AddMeetingChoiceModal } from "@/components/add-meeting-choice-modal";
-import { usePushNotifications } from "@/hooks/use-push-notifications";
+import { usePushNotificationsContext } from "@/components/push-notifications-provider";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Tooltip,
@@ -47,7 +47,8 @@ export default function Dashboard() {
     query: { refetchInterval: 30_000, refetchIntervalInBackground: false },
   });
 
-  const { state: pushState, subscribe, unsubscribe } = usePushNotifications();
+  const { state: pushState, subscribe, unsubscribe } =
+    usePushNotificationsContext();
 
   // ── Edit / create form ──────────────────────────────────────────────────────
   const [formOpen, setFormOpen] = useState(false);

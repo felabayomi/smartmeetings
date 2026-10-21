@@ -1174,8 +1174,8 @@ export default async function handler(request, response) {
           [ownerId],
         ),
       ]);
-      const calendarName = profile.rows[0]?.display_name
-        ? `${profile.rows[0].display_name} — MeetMinder`
+      const calendarName = profile.rows[0]?.display_name?.trim()
+        ? profile.rows[0].display_name.trim()
         : "MeetMinder Calendar";
       const calendarTimezone = profile.rows[0]?.timezone || "UTC";
       const feed = buildCalendarFeed(

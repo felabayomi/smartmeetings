@@ -19,6 +19,7 @@ import MyBookings from "./pages/my-bookings";
 import PublicPoll from "./pages/public-poll";
 import { DataPrivacy, HowToUse, TermsOfUse } from "./pages/information";
 import CalendarSettings from "./pages/calendar-settings";
+import { PushNotificationsProvider } from "@/components/push-notifications-provider";
 import { useToast } from "@/hooks/use-toast";
 import {
   APP_TZ,
@@ -189,7 +190,9 @@ function App() {
         <ServiceWorkerRegistrar />
         <AutomaticTimezoneMonitor />
         <AuthenticatedRequests>
-          <Router />
+          <PushNotificationsProvider>
+            <Router />
+          </PushNotificationsProvider>
         </AuthenticatedRequests>
         <Toaster />
       </TooltipProvider>
