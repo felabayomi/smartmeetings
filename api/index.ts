@@ -218,8 +218,8 @@ function buildCalendarFeed(meetings, cancellations, calendarName, timezone) {
     "METHOD:PUBLISH",
     `X-WR-CALNAME:${escapeIcsText(calendarName)}`,
     `X-WR-TIMEZONE:${escapeIcsText(timezone || "UTC")}`,
-    "REFRESH-INTERVAL;VALUE=DURATION:PT15M",
-    "X-PUBLISHED-TTL:PT15M",
+    "REFRESH-INTERVAL;VALUE=DURATION:PT5M",
+    "X-PUBLISHED-TTL:PT5M",
   ];
 
   for (const row of meetings) {
@@ -1259,7 +1259,14 @@ export default async function handler(request, response) {
         "Content-Disposition",
         'inline; filename="meetminder-calendar.ics"',
       );
-      response.setHeader("Cache-Control", "private, no-store, max-age=0");
+      response.setHeader(
+        "Cache-Control",
+        "private, no-cache, no-store, must-revalidate, max-age=0, s-maxage=0",
+      );
+      response.setHeader("CDN-Cache-Control", "no-store");
+      response.setHeader("Vercel-CDN-Cache-Control", "no-store");
+      response.setHeader("Pragma", "no-cache");
+      response.setHeader("Expires", "0");
       response.setHeader("Referrer-Policy", "no-referrer");
       response.setHeader("X-Content-Type-Options", "nosniff");
       response.setHeader("X-Robots-Tag", "noindex, nofollow");

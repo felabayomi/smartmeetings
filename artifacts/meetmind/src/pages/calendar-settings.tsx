@@ -247,6 +247,10 @@ export default function CalendarSettings() {
                 <li>Choose Other, then Add Subscribed Calendar.</li>
                 <li>Paste the MeetMinder subscription link into Server.</li>
                 <li>Choose Next, leave SSL enabled, then choose Save.</li>
+                <li>
+                  In Calendar Accounts, open Fetch New Data and choose the shortest
+                  available Fetch interval for subscribed calendars.
+                </li>
               </ol>
             </div>
             <div className="rounded-2xl border p-5">
@@ -262,7 +266,9 @@ export default function CalendarSettings() {
           </div>
 
           <p className="rounded-xl bg-muted/50 p-4 text-sm text-muted-foreground">
-            Apple controls subscription refresh timing, so changes may not appear immediately.
+            MeetMinder publishes every saved change immediately and requests a five-minute
+            refresh. Apple controls when its Calendar app checks subscribed calendars, so the
+            actual delay can be longer. On a Mac, choose View → Refresh Calendars to check now.
             Do not share the private link. If it is exposed, replace or revoke it here.
           </p>
         </section>
