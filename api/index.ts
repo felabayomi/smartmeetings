@@ -8,7 +8,12 @@ import { del, get, put } from "@vercel/blob";
 import { addDays, addHours, addMinutes } from "date-fns";
 import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 import { RecurrenceError } from "../lib/recurrence.cjs";
-import { ensureRecurrenceTables, materializeSeries, createSeries, excludeOccurrence } from "../lib/recurrence-store.cjs";
+import {
+  ensureRecurrenceTables,
+  materializeSeries,
+  createSeries,
+  excludeOccurrence,
+} from "../lib/recurrence-store.cjs";
 import { parseIcs, IcsError } from "../lib/ics-import.cjs";
 import { ensureImportTables, importEvents } from "../lib/ics-store.cjs";
 
@@ -33,6 +38,7 @@ let schedulingReady;
 let pushReady;
 let scanStorageReady;
 let calendarFeedReady;
+let countdownReady;
 
 let vapidConfiguration;
 
@@ -112,7 +118,9 @@ function ensureScanStorageTables() {
 
 function ensureCalendarFeedTables() {
   if (!calendarFeedReady)
-    calendarFeedReady = pool.query(`
+    calendarFeedReady = pool
+      .query(
+        `
     CREATE TABLE IF NOT EXISTS calendar_feed_tokens (
       user_id TEXT PRIMARY KEY,
       token_hash TEXT UNIQUE NOT NULL,
@@ -132,11 +140,34 @@ function ensureCalendarFeedTables() {
     );
     CREATE INDEX IF NOT EXISTS calendar_feed_cancellations_owner_idx
       ON calendar_feed_cancellations(owner_id,cancelled_at DESC);
-  `).catch((error) => {
-      calendarFeedReady = undefined;
-      throw error;
-    });
+  `,
+      )
+      .catch((error) => {
+        calendarFeedReady = undefined;
+        throw error;
+      });
   return calendarFeedReady;
+}
+
+function ensureCountdownTables() {
+  if (!countdownReady)
+    countdownReady = pool
+      .query(
+        `
+      CREATE TABLE IF NOT EXISTS countdown_settings (
+        user_id TEXT PRIMARY KEY,
+        enabled BOOLEAN NOT NULL DEFAULT FALSE,
+        start_minutes INTEGER NOT NULL DEFAULT 120,
+        privacy_mode TEXT NOT NULL DEFAULT 'title',
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `,
+      )
+      .catch((error) => {
+        countdownReady = undefined;
+        throw error;
+      });
+  return countdownReady;
 }
 
 function calendarFeedTokenHash(token) {
@@ -274,6 +305,7 @@ async function sendPushReminders() {
   await ensureImportTables(pool);
   await materializeSeries(pool);
   await ensurePushTables();
+  await ensureCountdownTables();
   const now = new Date();
   // The production scheduler runs every five minutes. Keep a wider look-back
   // so a slightly delayed invocation does not permanently lose a reminder.
@@ -282,14 +314,28 @@ async function sendPushReminders() {
     `SELECT * FROM meetings WHERE start_time > $1 AND start_time < $2`,
     [windowStart, addDays(now, 8)],
   );
+  const countdownSettings = await pool.query(
+    `SELECT user_id,start_minutes,privacy_mode
+    FROM countdown_settings WHERE enabled=TRUE`,
+  );
+  const countdownByUser = new Map(
+    countdownSettings.rows.map((row) => [row.user_id, row]),
+  );
   let sent = 0;
   for (const row of meetings.rows) {
-    const reminders = [
+    const configuredReminders = [
       row.reminder_minutes ?? 15,
       row.reminder_minutes_2,
       row.reminder_minutes_3,
       row.reminder_minutes_4,
     ].filter((value) => Number.isFinite(value));
+    const countdown = countdownByUser.get(row.calendar_token);
+    const countdownReminders = countdown
+      ? [Number(countdown.start_minutes), 60, 30, 10, 0]
+      : [];
+    const reminders = [
+      ...new Set([...configuredReminders, ...countdownReminders]),
+    ];
     for (const minutes of reminders) {
       const fireAt = addMinutes(new Date(row.start_time), -Number(minutes));
       if (fireAt < windowStart || fireAt > now) continue;
@@ -299,18 +345,20 @@ async function sendPushReminders() {
         [row.id, minutes, fireAt],
       );
       const label =
-        Number(minutes) >= 1440 && Number(minutes) % 1440 === 0
-          ? `${Number(minutes) / 1440} day${Number(minutes) >= 2880 ? "s" : ""}`
-          : Number(minutes) >= 60
-          ? `${Math.round(Number(minutes) / 60)} hour${Number(minutes) >= 120 ? "s" : ""}`
-          : `${minutes} minutes`;
+        Number(minutes) === 0
+          ? "now"
+          : Number(minutes) >= 1440 && Number(minutes) % 1440 === 0
+            ? `${Number(minutes) / 1440} day${Number(minutes) >= 2880 ? "s" : ""}`
+            : Number(minutes) >= 60
+              ? `${Math.round(Number(minutes) / 60)} hour${Number(minutes) >= 120 ? "s" : ""}`
+              : `${minutes} minutes`;
       await pool.query(
         `INSERT INTO user_notifications (user_id,type,title,body,meeting_id,dedupe_key)
         VALUES ($1,'reminder',$2,$3,$4,$5) ON CONFLICT (dedupe_key) DO NOTHING`,
         [
           row.calendar_token,
           `Upcoming: ${row.title}`,
-          `Starts in ${label}`,
+          Number(minutes) === 0 ? "Starting now" : `Starts in ${label}`,
           row.id,
           `reminder:${row.id}:${minutes}:${fireAt.toISOString()}`,
         ],
@@ -320,8 +368,14 @@ async function sendPushReminders() {
         [row.calendar_token],
       );
       const payload = JSON.stringify({
-        title: `Meeting in ${label}`,
-        body: row.title,
+        title:
+          Number(minutes) === 0
+            ? "Meeting starting now"
+            : `Meeting in ${label}`,
+        body:
+          countdown?.privacy_mode === "private"
+            ? "Open MeetMind for details"
+            : row.title,
         tag: `meeting-${row.id}-${minutes}`,
         data: { url: "/app" },
       });
@@ -794,17 +848,32 @@ const extractedMeetingSchema = {
         "Only fields that are ambiguous, inferred, partly obscured, internally inconsistent, or otherwise need focused human review. Do not flag an optional field merely because it is absent.",
     },
     recurrence: {
-      type: ["object", "null"], additionalProperties: false,
+      type: ["object", "null"],
+      additionalProperties: false,
       properties: {
-        frequency: { type: "string", enum: ["daily", "weekly", "monthly", "yearly"] },
+        frequency: {
+          type: "string",
+          enum: ["daily", "weekly", "monthly", "yearly"],
+        },
         interval: { type: "integer", minimum: 1, maximum: 365 },
         timezone: { type: "string" },
-        weekdays: { type: "array", items: { type: "integer", minimum: 0, maximum: 6 } },
+        weekdays: {
+          type: "array",
+          items: { type: "integer", minimum: 0, maximum: 6 },
+        },
         count: { type: ["integer", "null"], minimum: 1, maximum: 1000 },
         until: { type: ["string", "null"] },
       },
-      required: ["frequency", "interval", "timezone", "weekdays", "count", "until"],
-      description: "Repeat rule only when explicitly stated. Use the source event IANA timezone; Sunday=0. Until is an inclusive YYYY-MM-DD date. Null count and until means no stated end. Do not expand repeats into separate meetings.",
+      required: [
+        "frequency",
+        "interval",
+        "timezone",
+        "weekdays",
+        "count",
+        "until",
+      ],
+      description:
+        "Repeat rule only when explicitly stated. Use the source event IANA timezone; Sunday=0. Until is an inclusive YYYY-MM-DD date. Null count and until means no stated end. Do not expand repeats into separate meetings.",
     },
   },
   required: [
@@ -1066,7 +1135,8 @@ async function extractMeeting(request, response, userId) {
         flag?.reason &&
         flags.findIndex(
           (candidate) =>
-            candidate?.field === flag.field && candidate?.reason === flag.reason,
+            candidate?.field === flag.field &&
+            candidate?.reason === flag.reason,
         ) === index,
     );
     const sourceStart = localInstant(
@@ -1345,14 +1415,12 @@ export default async function handler(request, response) {
           ],
         );
         await client.query("COMMIT");
-        return response
-          .status(201)
-          .json({
-            success: true,
-            meeting: meeting(inserted.rows[0]),
-            ownerTimezone: profile.timezone,
-            manageToken,
-          });
+        return response.status(201).json({
+          success: true,
+          meeting: meeting(inserted.rows[0]),
+          ownerTimezone: profile.timezone,
+          manageToken,
+        });
       } catch (error) {
         await client.query("ROLLBACK");
         throw error;
@@ -1387,12 +1455,10 @@ export default async function handler(request, response) {
           .json({ error: "Rescheduling link not found" });
       const booking = result.rows[0];
       if (new Date(booking.start_time) <= new Date())
-        return response
-          .status(410)
-          .json({
-            error:
-              "This meeting has started or passed and can no longer be rescheduled",
-          });
+        return response.status(410).json({
+          error:
+            "This meeting has started or passed and can no longer be rescheduled",
+        });
       const payload = {
         profile: publicProfile(booking),
         booking: {
@@ -1532,17 +1598,15 @@ export default async function handler(request, response) {
           [selected.startTime, selected.endTime, current.id],
         );
         await client.query("COMMIT");
-        return response
-          .status(200)
-          .json({
-            success: true,
-            profile: publicProfile(profile),
-            booking: {
-              guestName: current.guest_name,
-              startTime: selected.startTime,
-              endTime: selected.endTime,
-            },
-          });
+        return response.status(200).json({
+          success: true,
+          profile: publicProfile(profile),
+          booking: {
+            guestName: current.guest_name,
+            startTime: selected.startTime,
+            endTime: selected.endTime,
+          },
+        });
       } catch (error) {
         await client.query("ROLLBACK");
         throw error;
@@ -1587,11 +1651,9 @@ export default async function handler(request, response) {
         Array.isArray(selections) &&
         selections.filter((option) => poll.rows[0].options.includes(option));
       if (!participantName?.trim() || !valid?.length)
-        return response
-          .status(400)
-          .json({
-            error: "Your name and at least one available time are required",
-          });
+        return response.status(400).json({
+          error: "Your name and at least one available time are required",
+        });
       await pool.query(
         "INSERT INTO poll_responses (id,poll_id,participant_name,participant_email,participant_timezone,selections) VALUES ($1,$2,$3,$4,$5,$6)",
         [
@@ -1609,6 +1671,42 @@ export default async function handler(request, response) {
     const userId = await authenticatedUserId(request);
     if (!userId)
       return response.status(401).json({ error: "Sign in required" });
+
+    if (path === "/countdown-settings" && request.method === "GET") {
+      await ensureCountdownTables();
+      const current = await pool.query(
+        `SELECT enabled,start_minutes,privacy_mode
+        FROM countdown_settings WHERE user_id=$1`,
+        [userId],
+      );
+      const row = current.rows[0];
+      return response.status(200).json({
+        enabled: Boolean(row?.enabled),
+        startMinutes: Number(row?.start_minutes || 120),
+        privacyMode: row?.privacy_mode === "private" ? "private" : "title",
+      });
+    }
+
+    if (path === "/countdown-settings" && request.method === "PUT") {
+      await ensureCountdownTables();
+      const enabled = request.body?.enabled === true;
+      const requestedStart = Number(request.body?.startMinutes);
+      const startMinutes = [60, 120, 240, 480, 1440].includes(requestedStart)
+        ? requestedStart
+        : 120;
+      const privacyMode =
+        request.body?.privacyMode === "private" ? "private" : "title";
+      await pool.query(
+        `INSERT INTO countdown_settings
+          (user_id,enabled,start_minutes,privacy_mode,updated_at)
+        VALUES ($1,$2,$3,$4,NOW())
+        ON CONFLICT (user_id) DO UPDATE SET
+          enabled=EXCLUDED.enabled,start_minutes=EXCLUDED.start_minutes,
+          privacy_mode=EXCLUDED.privacy_mode,updated_at=NOW()`,
+        [userId, enabled, startMinutes, privacyMode],
+      );
+      return response.status(200).json({ enabled, startMinutes, privacyMode });
+    }
 
     if (path === "/calendar-subscription" && request.method === "GET") {
       await ensureCalendarFeedTables();
@@ -1642,9 +1740,10 @@ export default async function handler(request, response) {
       const forwardedHost = String(
         request.headers["x-forwarded-host"] || request.headers.host || "",
       ).split(",")[0];
-      const origin = process.env.VERCEL_ENV === "production"
-        ? "https://www.meetminder.app"
-        : `${forwardedProto}://${forwardedHost}`;
+      const origin =
+        process.env.VERCEL_ENV === "production"
+          ? "https://www.meetminder.app"
+          : `${forwardedProto}://${forwardedHost}`;
       return response.status(201).json({
         active: true,
         createdAt: current.rows[0].created_at,
@@ -1663,20 +1762,50 @@ export default async function handler(request, response) {
     }
 
     if (path.startsWith("/meetings")) await ensureImportTables(pool);
-    if ((path === "/meetings/import-preview" || path === "/meetings/import") && request.method === "POST") {
+    if (
+      (path === "/meetings/import-preview" || path === "/meetings/import") &&
+      request.method === "POST"
+    ) {
       const { text, timezone, selectedUids, confirmed } = request.body || {};
       const preview = parseIcs(text, timezone);
       if (path === "/meetings/import-preview") {
-        const prior = await pool.query("SELECT uid FROM calendar_imports WHERE owner_id=$1 AND uid=ANY($2::text[])",[userId,preview.events.map(event=>event.uid)]);
-        const imported = new Set(prior.rows.map(row=>row.uid));
-        return response.status(200).json({...preview,events:preview.events.map(event=>({...event,alreadyImported:imported.has(event.uid)}))});
+        const prior = await pool.query(
+          "SELECT uid FROM calendar_imports WHERE owner_id=$1 AND uid=ANY($2::text[])",
+          [userId, preview.events.map((event) => event.uid)],
+        );
+        const imported = new Set(prior.rows.map((row) => row.uid));
+        return response
+          .status(200)
+          .json({
+            ...preview,
+            events: preview.events.map((event) => ({
+              ...event,
+              alreadyImported: imported.has(event.uid),
+            })),
+          });
       }
-      if (confirmed !== true || !Array.isArray(selectedUids) || !selectedUids.length || selectedUids.length>200)
-        return response.status(400).json({error:"Review the preview and confirm which events to import."});
+      if (
+        confirmed !== true ||
+        !Array.isArray(selectedUids) ||
+        !selectedUids.length ||
+        selectedUids.length > 200
+      )
+        return response
+          .status(400)
+          .json({
+            error: "Review the preview and confirm which events to import.",
+          });
       const selected = new Set(selectedUids);
-      const events = preview.events.filter(event=>selected.has(event.uid));
-      if (events.length !== selected.size) return response.status(400).json({error:"Some selected entries are no longer valid. Preview again."});
-      return response.status(200).json(await importEvents(pool,userId,events));
+      const events = preview.events.filter((event) => selected.has(event.uid));
+      if (events.length !== selected.size)
+        return response
+          .status(400)
+          .json({
+            error: "Some selected entries are no longer valid. Preview again.",
+          });
+      return response
+        .status(200)
+        .json(await importEvents(pool, userId, events));
     }
 
     if (path === "/push/subscribe" && request.method === "POST") {
@@ -1813,14 +1942,12 @@ export default async function handler(request, response) {
             ...item,
             allDay: Boolean(item.allDay),
           }));
-      return response
-        .status(200)
-        .json({
-          ...publicProfile(row),
-          availability,
-          maxBookingsPerDay: row.max_bookings_per_day,
-          blackouts: row.blackouts,
-        });
+      return response.status(200).json({
+        ...publicProfile(row),
+        availability,
+        maxBookingsPerDay: row.max_bookings_per_day,
+        blackouts: row.blackouts,
+      });
     }
     if (path === "/scheduling/profile" && request.method === "PUT") {
       await ensureSchedulingTables();
@@ -1888,14 +2015,12 @@ export default async function handler(request, response) {
         ],
       );
       const row = result.rows[0];
-      return response
-        .status(200)
-        .json({
-          ...publicProfile(row),
-          availability: row.availability,
-          maxBookingsPerDay: row.max_bookings_per_day,
-          blackouts: row.blackouts,
-        });
+      return response.status(200).json({
+        ...publicProfile(row),
+        availability: row.availability,
+        maxBookingsPerDay: row.max_bookings_per_day,
+        blackouts: row.blackouts,
+      });
     }
     if (path === "/scheduling/polls" && request.method === "GET") {
       await ensureSchedulingTables();
@@ -1923,11 +2048,9 @@ export default async function handler(request, response) {
           ].sort()
         : [];
       if (!title?.trim() || !validTimezone(timezone) || normalized.length < 2)
-        return response
-          .status(400)
-          .json({
-            error: "Title, timezone, and at least two times are required",
-          });
+        return response.status(400).json({
+          error: "Title, timezone, and at least two times are required",
+        });
       const id = randomUUID();
       const slug = `${slugify(title)}-${Math.random().toString(36).slice(2, 8)}`;
       const result = await pool.query(
@@ -2062,11 +2185,20 @@ export default async function handler(request, response) {
         const client = await pool.connect();
         try {
           await client.query("BEGIN");
-          const row = await createSeries(client, userId, { ...values, sourceScanId }, request.body.recurrence);
+          const row = await createSeries(
+            client,
+            userId,
+            { ...values, sourceScanId },
+            request.body.recurrence,
+          );
           await client.query("COMMIT");
           return response.status(201).json(meeting(row));
-        } catch (error) { await client.query("ROLLBACK"); throw error; }
-        finally { client.release(); }
+        } catch (error) {
+          await client.query("ROLLBACK");
+          throw error;
+        } finally {
+          client.release();
+        }
       }
       const columns = [
         "calendar_token",
@@ -2091,17 +2223,39 @@ export default async function handler(request, response) {
       await ensureRecurrenceTables(pool);
       await ensureCalendarFeedTables();
       const { action, scope } = request.body || {};
-      if (!["update", "delete"].includes(action) || !["all", "future"].includes(scope))
+      if (
+        !["update", "delete"].includes(action) ||
+        !["all", "future"].includes(scope)
+      )
         return response.status(400).json({ error: "Invalid series action" });
       const client = await pool.connect();
       try {
         await client.query("BEGIN");
-        const found = await client.query("SELECT * FROM meetings WHERE id=$1 AND calendar_token=$2", [Number(seriesMatch[1]), userId]);
-        if (!found.rowCount) { await client.query("ROLLBACK"); return response.status(404).json({ error: "Meeting not found" }); }
+        const found = await client.query(
+          "SELECT * FROM meetings WHERE id=$1 AND calendar_token=$2",
+          [Number(seriesMatch[1]), userId],
+        );
+        if (!found.rowCount) {
+          await client.query("ROLLBACK");
+          return response.status(404).json({ error: "Meeting not found" });
+        }
         let selected = found.rows[0];
-        const series = selected.series_id ? (await client.query("SELECT * FROM meeting_series WHERE id=$1 AND owner_id=$2 FOR UPDATE", [selected.series_id,userId])).rows[0] : null;
-        const locked = await client.query("SELECT * FROM meetings WHERE id=$1 AND calendar_token=$2 FOR UPDATE",[selected.id,userId]);
-        if (!locked.rowCount) throw new RecurrenceError("This occurrence changed in another window. Refresh before editing.");
+        const series = selected.series_id
+          ? (
+              await client.query(
+                "SELECT * FROM meeting_series WHERE id=$1 AND owner_id=$2 FOR UPDATE",
+                [selected.series_id, userId],
+              )
+            ).rows[0]
+          : null;
+        const locked = await client.query(
+          "SELECT * FROM meetings WHERE id=$1 AND calendar_token=$2 FOR UPDATE",
+          [selected.id, userId],
+        );
+        if (!locked.rowCount)
+          throw new RecurrenceError(
+            "This occurrence changed in another window. Refresh before editing.",
+          );
         selected = locked.rows[0];
         let replacement = null;
         if (action === "update") {
@@ -2109,14 +2263,36 @@ export default async function handler(request, response) {
           // Preserve the series' first date when editing the entire series from
           // a later occurrence; shift by the reviewed local calendar delta.
           if (series && scope === "all") {
-            const zone = request.body.recurrence?.timezone || series.rule.timezone;
-            const wall = value => Date.parse(formatInTimeZone(value, zone, "yyyy-MM-dd'T'HH:mm:ss") + "Z");
-            const duration = values.endTime ? Date.parse(values.endTime)-Date.parse(values.startTime) : null;
-            const shifted = new Date(wall(series.template.startTime) + wall(values.startTime)-wall(selected.start_time)).toISOString().slice(0,19);
+            const zone =
+              request.body.recurrence?.timezone || series.rule.timezone;
+            const wall = (value) =>
+              Date.parse(
+                formatInTimeZone(value, zone, "yyyy-MM-dd'T'HH:mm:ss") + "Z",
+              );
+            const duration = values.endTime
+              ? Date.parse(values.endTime) - Date.parse(values.startTime)
+              : null;
+            const shifted = new Date(
+              wall(series.template.startTime) +
+                wall(values.startTime) -
+                wall(selected.start_time),
+            )
+              .toISOString()
+              .slice(0, 19);
             values.startTime = fromZonedTime(shifted, zone).toISOString();
-            values.endTime = duration === null ? null : new Date(Date.parse(values.startTime)+duration).toISOString();
+            values.endTime =
+              duration === null
+                ? null
+                : new Date(
+                    Date.parse(values.startTime) + duration,
+                  ).toISOString();
           }
-          replacement = await createSeries(client,userId,{...values,sourceScanId:selected.scan_source_id},request.body.recurrence);
+          replacement = await createSeries(
+            client,
+            userId,
+            { ...values, sourceScanId: selected.scan_source_id },
+            request.body.recurrence,
+          );
         }
         if (series) {
           await recordCalendarFeedCancellations(
@@ -2125,26 +2301,49 @@ export default async function handler(request, response) {
             "m.series_id=$2 AND ($3::text='all' OR m.recurrence_key >= $4)",
             [series.id, scope, selected.recurrence_key],
           );
-          if (scope === "all") await client.query("UPDATE meeting_series SET active=FALSE WHERE id=$1",[series.id]);
-          else await client.query("UPDATE meeting_series SET stop_before=$2 WHERE id=$1",[series.id,selected.recurrence_key]);
-          await client.query("DELETE FROM meetings WHERE calendar_token=$1 AND series_id=$2 AND ($3::text='all' OR recurrence_key >= $4)",[userId,series.id,scope,selected.recurrence_key]);
+          if (scope === "all")
+            await client.query(
+              "UPDATE meeting_series SET active=FALSE WHERE id=$1",
+              [series.id],
+            );
+          else
+            await client.query(
+              "UPDATE meeting_series SET stop_before=$2 WHERE id=$1",
+              [series.id, selected.recurrence_key],
+            );
+          await client.query(
+            "DELETE FROM meetings WHERE calendar_token=$1 AND series_id=$2 AND ($3::text='all' OR recurrence_key >= $4)",
+            [userId, series.id, scope, selected.recurrence_key],
+          );
         } else {
           // Direct bookings keep their management link: they cannot be turned
           // into recurring series through a calendar edit.
-          const linked = await client.query("SELECT 1 FROM bookings WHERE meeting_id=$1",[selected.id]);
-          if (linked.rowCount) throw new RecurrenceError("A guest booking cannot be converted into a recurring series.");
-          await recordCalendarFeedCancellations(
-            client,
-            userId,
-            "m.id=$2",
+          const linked = await client.query(
+            "SELECT 1 FROM bookings WHERE meeting_id=$1",
             [selected.id],
           );
-          await client.query("DELETE FROM meetings WHERE id=$1 AND calendar_token=$2",[selected.id,userId]);
+          if (linked.rowCount)
+            throw new RecurrenceError(
+              "A guest booking cannot be converted into a recurring series.",
+            );
+          await recordCalendarFeedCancellations(client, userId, "m.id=$2", [
+            selected.id,
+          ]);
+          await client.query(
+            "DELETE FROM meetings WHERE id=$1 AND calendar_token=$2",
+            [selected.id, userId],
+          );
         }
         await client.query("COMMIT");
-        return response.status(200).json(replacement ? meeting(replacement) : {success:true});
-      } catch(error) { await client.query("ROLLBACK"); throw error; }
-      finally { client.release(); }
+        return response
+          .status(200)
+          .json(replacement ? meeting(replacement) : { success: true });
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally {
+        client.release();
+      }
     }
 
     const match = path.match(/^\/meetings\/(\d+)$/);
@@ -2190,19 +2389,23 @@ export default async function handler(request, response) {
           await client.query("BEGIN");
           // Always lock the parent series before its occurrence, matching the
           // materializer and series editor lock order.
-          const parent = await client.query("SELECT series_id FROM meetings WHERE id=$1 AND calendar_token=$2",[id,userId]);
-          if (parent.rows[0]?.series_id) await client.query("SELECT id FROM meeting_series WHERE id=$1 AND owner_id=$2 FOR UPDATE",[parent.rows[0].series_id,userId]);
+          const parent = await client.query(
+            "SELECT series_id FROM meetings WHERE id=$1 AND calendar_token=$2",
+            [id, userId],
+          );
+          if (parent.rows[0]?.series_id)
+            await client.query(
+              "SELECT id FROM meeting_series WHERE id=$1 AND owner_id=$2 FOR UPDATE",
+              [parent.rows[0].series_id, userId],
+            );
           const source = await client.query(
             "SELECT scan_source_id,series_id,recurrence_key FROM meetings WHERE id=$1 AND calendar_token=$2 FOR UPDATE",
             [id, userId],
           );
           if (source.rows[0]) await excludeOccurrence(client, source.rows[0]);
-          await recordCalendarFeedCancellations(
-            client,
-            userId,
-            "m.id=$2",
-            [id],
-          );
+          await recordCalendarFeedCancellations(client, userId, "m.id=$2", [
+            id,
+          ]);
           await client.query(
             `DELETE FROM bookings
             WHERE owner_id = $2 AND meeting_id IN (
@@ -2252,8 +2455,10 @@ export default async function handler(request, response) {
 
     return response.status(404).json({ error: "Not found" });
   } catch (error) {
-    if (error instanceof IcsError) return response.status(400).json({error:error.message});
-    if (error instanceof RecurrenceError) return response.status(400).json({ error: error.message });
+    if (error instanceof IcsError)
+      return response.status(400).json({ error: error.message });
+    if (error instanceof RecurrenceError)
+      return response.status(400).json({ error: error.message });
     console.error("Meeting API error", error);
     const message = error instanceof Error ? error.message : "Request failed";
     if (

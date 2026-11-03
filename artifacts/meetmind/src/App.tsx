@@ -19,6 +19,7 @@ import MyBookings from "./pages/my-bookings";
 import PublicPoll from "./pages/public-poll";
 import { DataPrivacy, HowToUse, TermsOfUse } from "./pages/information";
 import CalendarSettings from "./pages/calendar-settings";
+import CountdownPage from "./pages/countdown";
 import { PushNotificationsProvider } from "@/components/push-notifications-provider";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -40,13 +41,18 @@ function ServiceWorkerRegistrar() {
   useEffect(() => {
     if (!("serviceWorker" in navigator)) return;
     let registration: ServiceWorkerRegistration | null = null;
-    const checkForUpdate = () => { if (document.visibilityState === "visible") void registration?.update(); };
+    const checkForUpdate = () => {
+      if (document.visibilityState === "visible") void registration?.update();
+    };
 
     document.addEventListener("visibilitychange", checkForUpdate);
-    navigator.serviceWorker.register("/sw.js", { scope: "/" }).then((reg) => {
-      registration = reg;
-      void reg.update();
-    }).catch((err) => console.warn("SW registration failed:", err));
+    navigator.serviceWorker
+      .register("/sw.js", { scope: "/" })
+      .then((reg) => {
+        registration = reg;
+        void reg.update();
+      })
+      .catch((err) => console.warn("SW registration failed:", err));
 
     return () => {
       document.removeEventListener("visibilitychange", checkForUpdate);
@@ -118,7 +124,11 @@ function ProtectedApp() {
   const { isLoaded, isSignedIn } = useAuth();
 
   if (!isLoaded) {
-    return <div className="min-h-screen grid place-items-center text-muted-foreground">Loading MeetMind…</div>;
+    return (
+      <div className="min-h-screen grid place-items-center text-muted-foreground">
+        Loading MeetMind…
+      </div>
+    );
   }
 
   if (!isSignedIn) return <Redirect to="/sign-in" />;
@@ -129,6 +139,7 @@ function ProtectedApp() {
       <Route path="/app/list" component={MeetingsList} />
       <Route path="/app/scheduling" component={Scheduling} />
       <Route path="/app/my-bookings" component={MyBookings} />
+      <Route path="/app/countdown" component={CountdownPage} />
       <Route path="/app/settings" component={CalendarSettings} />
       <Route component={NotFound} />
     </Switch>
@@ -158,16 +169,40 @@ function Router() {
     <Switch>
       <Route path="/" component={Landing} />
       <Route path="/sign-in/:rest*">
-        {isLoaded && isSignedIn ? <Redirect to="/app" /> : <AuthPage><SignIn routing="path" path="/sign-in" signUpUrl="/sign-up" /></AuthPage>}
+        {isLoaded && isSignedIn ? (
+          <Redirect to="/app" />
+        ) : (
+          <AuthPage>
+            <SignIn routing="path" path="/sign-in" signUpUrl="/sign-up" />
+          </AuthPage>
+        )}
       </Route>
       <Route path="/sign-in">
-        {isLoaded && isSignedIn ? <Redirect to="/app" /> : <AuthPage><SignIn routing="path" path="/sign-in" signUpUrl="/sign-up" /></AuthPage>}
+        {isLoaded && isSignedIn ? (
+          <Redirect to="/app" />
+        ) : (
+          <AuthPage>
+            <SignIn routing="path" path="/sign-in" signUpUrl="/sign-up" />
+          </AuthPage>
+        )}
       </Route>
       <Route path="/sign-up/:rest*">
-        {isLoaded && isSignedIn ? <Redirect to="/app" /> : <AuthPage><SignUp routing="path" path="/sign-up" signInUrl="/sign-in" /></AuthPage>}
+        {isLoaded && isSignedIn ? (
+          <Redirect to="/app" />
+        ) : (
+          <AuthPage>
+            <SignUp routing="path" path="/sign-up" signInUrl="/sign-in" />
+          </AuthPage>
+        )}
       </Route>
       <Route path="/sign-up">
-        {isLoaded && isSignedIn ? <Redirect to="/app" /> : <AuthPage><SignUp routing="path" path="/sign-up" signInUrl="/sign-in" /></AuthPage>}
+        {isLoaded && isSignedIn ? (
+          <Redirect to="/app" />
+        ) : (
+          <AuthPage>
+            <SignUp routing="path" path="/sign-up" signInUrl="/sign-in" />
+          </AuthPage>
+        )}
       </Route>
       <Route path="/book/:slug" component={PublicBooking} />
       <Route path="/manage/:token" component={RescheduleBooking} />
@@ -183,7 +218,6 @@ function Router() {
 }
 
 function App() {
-
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>

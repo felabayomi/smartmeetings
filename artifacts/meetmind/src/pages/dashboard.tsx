@@ -11,6 +11,7 @@ import {
   BellRing,
   BellOff,
   Bell,
+  TimerReset,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -47,8 +48,11 @@ export default function Dashboard() {
     query: { refetchInterval: 30_000, refetchIntervalInBackground: false },
   });
 
-  const { state: pushState, subscribe, unsubscribe } =
-    usePushNotificationsContext();
+  const {
+    state: pushState,
+    subscribe,
+    unsubscribe,
+  } = usePushNotificationsContext();
 
   // ── Edit / create form ──────────────────────────────────────────────────────
   const [formOpen, setFormOpen] = useState(false);
@@ -340,6 +344,25 @@ export default function Dashboard() {
             </motion.div>
           )}
         </AnimatePresence>
+
+        <a
+          href="/app/countdown"
+          className="flex items-center gap-4 rounded-2xl border border-indigo-200 bg-gradient-to-r from-indigo-50 to-violet-50 p-4 transition hover:border-indigo-300 dark:border-indigo-900 dark:from-indigo-950/40 dark:to-violet-950/30"
+        >
+          <div className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-indigo-600 text-white">
+            <TimerReset className="h-5 w-5" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="font-semibold text-foreground">Meeting Countdown</p>
+            <p className="text-sm text-muted-foreground">
+              Keep your next meeting visible and turn on stronger attention
+              alerts.
+            </p>
+          </div>
+          <span className="hidden text-sm font-semibold text-indigo-700 sm:block dark:text-indigo-300">
+            Open countdown →
+          </span>
+        </a>
 
         {/* Today's meetings */}
         {isLoading ? (

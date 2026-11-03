@@ -11,8 +11,24 @@
   "theme_color": "#4f46e5",
   "categories": ["productivity", "business", "utilities"],
   "shortcuts": [
-    { "name": "My calendar", "short_name": "Calendar", "url": "/app", "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }] },
-    { "name": "Scheduling", "short_name": "Scheduling", "url": "/app/scheduling", "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }] }
+    {
+      "name": "My calendar",
+      "short_name": "Calendar",
+      "url": "/app",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Scheduling",
+      "short_name": "Scheduling",
+      "url": "/app/scheduling",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Meeting countdown",
+      "short_name": "Countdown",
+      "url": "/app/countdown",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
+    }
   ],
   "icons": [
     {
