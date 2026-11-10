@@ -17,6 +17,12 @@ import {
 import { parseIcs, IcsError } from "../lib/ics-import.cjs";
 import { ensureImportTables, importEvents } from "../lib/ics-store.cjs";
 
+import {
+  encryptCalendarLink,
+  decryptCalendarLink,
+  calendarLinkToken,
+} from "../lib/calendar-link.cjs";
+
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
 function requireSecret(name) {
   const value = process.env[name]?.trim();
@@ -128,6 +134,7 @@ function ensureCalendarFeedTables() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       revoked_at TIMESTAMPTZ
     );
+    ALTER TABLE calendar_feed_tokens ADD COLUMN IF NOT EXISTS encrypted_link TEXT;
     CREATE TABLE IF NOT EXISTS calendar_feed_cancellations (
       owner_id TEXT NOT NULL,
       event_uid TEXT NOT NULL,
@@ -1718,11 +1725,14 @@ export default async function handler(request, response) {
     if (path === "/calendar-subscription" && request.method === "GET") {
       await ensureCalendarFeedTables();
       const current = await pool.query(
-        `SELECT created_at,updated_at FROM calendar_feed_tokens
+        `SELECT created_at,updated_at,encrypted_link FROM calendar_feed_tokens
         WHERE user_id=$1 AND revoked_at IS NULL`,
         [userId],
       );
       return response.status(200).json({
+        feedUrl: current.rows[0]?.encrypted_link
+          ? decryptCalendarLink(current.rows[0].encrypted_link, userId)
+          : null,
         active: Boolean(current.rowCount),
         createdAt: current.rows[0]?.created_at || null,
         updatedAt: current.rows[0]?.updated_at || null,
@@ -1732,15 +1742,6 @@ export default async function handler(request, response) {
       await ensureCalendarFeedTables();
       const token = randomBytes(32).toString("base64url");
       const tokenHash = calendarFeedTokenHash(token);
-      const current = await pool.query(
-        `INSERT INTO calendar_feed_tokens
-          (user_id,token_hash,created_at,updated_at,revoked_at)
-        VALUES ($1,$2,NOW(),NOW(),NULL)
-        ON CONFLICT (user_id) DO UPDATE SET
-          token_hash=EXCLUDED.token_hash,updated_at=NOW(),revoked_at=NULL
-        RETURNING created_at,updated_at`,
-        [userId, tokenHash],
-      );
       const forwardedProto = String(
         request.headers["x-forwarded-proto"] || "https",
       ).split(",")[0];
@@ -1751,18 +1752,64 @@ export default async function handler(request, response) {
         process.env.VERCEL_ENV === "production"
           ? "https://www.meetminder.app"
           : `${forwardedProto}://${forwardedHost}`;
+      const feedUrl = `${origin}/api/calendar-subscription/${token}.ics`;
+      const current = await pool.query(
+        `INSERT INTO calendar_feed_tokens
+          (user_id,token_hash,encrypted_link,created_at,updated_at,revoked_at)
+        VALUES ($1,$2,$3,NOW(),NOW(),NULL)
+        ON CONFLICT (user_id) DO UPDATE SET
+          token_hash=EXCLUDED.token_hash,encrypted_link=EXCLUDED.encrypted_link,updated_at=NOW(),revoked_at=NULL
+        RETURNING created_at,updated_at`,
+        [userId, tokenHash, encryptCalendarLink(feedUrl, userId)],
+      );
       return response.status(201).json({
         active: true,
         createdAt: current.rows[0].created_at,
         updatedAt: current.rows[0].updated_at,
-        feedUrl: `${origin}/api/calendar-subscription/${token}.ics`,
+        feedUrl,
       });
+    }
+    if (path === "/calendar-subscription" && request.method === "PUT") {
+      await ensureCalendarFeedTables();
+      const feedUrl =
+        typeof request.body?.feedUrl === "string"
+          ? request.body.feedUrl.trim()
+          : "";
+      const token = calendarLinkToken(feedUrl);
+      if (!token)
+        return response
+          .status(400)
+          .json({ error: "Enter a valid calendar subscription link." });
+      const current = await pool.query(
+        `UPDATE calendar_feed_tokens SET encrypted_link=$3
+         WHERE user_id=$1 AND token_hash=$2 AND revoked_at IS NULL
+         RETURNING created_at,updated_at`,
+        [
+          userId,
+          calendarFeedTokenHash(token),
+          encryptCalendarLink(feedUrl, userId),
+        ],
+      );
+      if (!current.rowCount)
+        return response
+          .status(400)
+          .json({
+            error: "This link does not match your active subscription.",
+          });
+      return response
+        .status(200)
+        .json({
+          active: true,
+          feedUrl,
+          createdAt: current.rows[0].created_at,
+          updatedAt: current.rows[0].updated_at,
+        });
     }
     if (path === "/calendar-subscription" && request.method === "DELETE") {
       await ensureCalendarFeedTables();
       await pool.query(
         `UPDATE calendar_feed_tokens
-        SET revoked_at=NOW(),updated_at=NOW() WHERE user_id=$1`,
+        SET revoked_at=NOW(),updated_at=NOW(),encrypted_link=NULL WHERE user_id=$1`,
         [userId],
       );
       return response.status(200).json({ active: false });
@@ -1781,15 +1828,13 @@ export default async function handler(request, response) {
           [userId, preview.events.map((event) => event.uid)],
         );
         const imported = new Set(prior.rows.map((row) => row.uid));
-        return response
-          .status(200)
-          .json({
-            ...preview,
-            events: preview.events.map((event) => ({
-              ...event,
-              alreadyImported: imported.has(event.uid),
-            })),
-          });
+        return response.status(200).json({
+          ...preview,
+          events: preview.events.map((event) => ({
+            ...event,
+            alreadyImported: imported.has(event.uid),
+          })),
+        });
       }
       if (
         confirmed !== true ||
@@ -1797,19 +1842,15 @@ export default async function handler(request, response) {
         !selectedUids.length ||
         selectedUids.length > 200
       )
-        return response
-          .status(400)
-          .json({
-            error: "Review the preview and confirm which events to import.",
-          });
+        return response.status(400).json({
+          error: "Review the preview and confirm which events to import.",
+        });
       const selected = new Set(selectedUids);
       const events = preview.events.filter((event) => selected.has(event.uid));
       if (events.length !== selected.size)
-        return response
-          .status(400)
-          .json({
-            error: "Some selected entries are no longer valid. Preview again.",
-          });
+        return response.status(400).json({
+          error: "Some selected entries are no longer valid. Preview again.",
+        });
       return response
         .status(200)
         .json(await importEvents(pool, userId, events));
